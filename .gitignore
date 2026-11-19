@@ -1,0 +1,8 @@
+# локальные данные программы: журналы изменений и настройки дашборда
+jira_toolkit_data/
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
+*.csv
+*.zip

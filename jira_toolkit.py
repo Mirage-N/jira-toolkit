@@ -1048,147 +1048,338 @@ class Handler(BaseHTTPRequestHandler):
         except JiraError as e: self._json({"error": str(e)}, 502)
         except Exception as e: self._json({"error": "внутренняя ошибка: " + str(e)}, 500)
 
-PAGE = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Jira Toolkit v0.23</title>
+PAGE = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Jira Toolkit v0.24</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-:root{--bg:#f6f7f9;--card:#fff;--tx:#1d2733;--mut:#6b7785;--br:#d9dee4;--ac:#1f5fbf;--ok:#1e8e4e;--wr:#c27a00;--er:#c62828}
-*{box-sizing:border-box}body{margin:0;font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--tx)}
-header{background:var(--card);border-bottom:1px solid var(--br);padding:12px 20px;display:flex;flex-wrap:wrap;gap:10px;align-items:center}
-h1{font-size:16px;margin:0 12px 0 0}input,select,textarea,button{font:inherit}
-input,select,textarea{border:1px solid var(--br);border-radius:6px;padding:6px 8px;background:#fff;color:var(--tx)}
-button{border:1px solid var(--br);background:#fff;border-radius:6px;padding:6px 12px;cursor:pointer}
-button.p{background:var(--ac);color:#fff;border-color:var(--ac)}button:disabled{opacity:.5;cursor:default}
-button.d{color:var(--er);border-color:var(--er)}
-main{max-width:1200px;margin:0 auto;padding:16px 20px}
-nav{display:flex;gap:4px;margin-bottom:12px}nav button{border-radius:6px 6px 0 0}nav button.on{background:var(--ac);color:#fff;border-color:var(--ac)}
-.card{background:var(--card);border:1px solid var(--br);border-radius:8px;padding:14px;margin-bottom:14px}
-.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:6px 0}.mut{color:var(--mut)}
-table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid var(--br);padding:5px 8px;text-align:left;vertical-align:top}
-th{background:#f0f2f5;font-weight:600}.chip{padding:1px 8px;border-radius:10px;font-size:12px;color:#fff;white-space:nowrap}
-.apply{background:var(--ok)}.skip{background:#8a96a3}.error{background:var(--er)}
-.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px}
-.tile{border:1px solid var(--br);border-left:6px solid var(--ok);border-radius:8px;padding:12px;background:#fff;text-decoration:none;color:inherit;display:block}
-.tile.warn{border-left-color:var(--wr)}.tile.crit{border-left-color:var(--er)}.tile.err{border-left-color:#8a96a3}
-.tile .n{font-size:30px;font-weight:700}.hide{display:none}textarea{width:100%;min-height:130px;font-family:ui-monospace,Consolas,monospace}
-.bar{height:10px;background:#e4e8ec;border-radius:5px;overflow:hidden}.bar i{display:block;height:100%;background:var(--ac)}
-#connmsg{font-size:13px}.ok{color:var(--ok)}.bad{color:var(--er)}
-.c-new{background:#8a96a3}.c-indeterminate{background:#1f5fbf}.c-done{background:#1e8e4e}.c-none{background:#c62828}
-.tg{border:0;background:none;padding:0 4px;cursor:pointer;color:var(--mut)}.od{color:var(--er);font-weight:600}
-.lkd{white-space:pre-wrap;font-size:12px;background:#f6f7f9;border-radius:6px;padding:8px;margin:4px 0}.warn{color:var(--wr);font-weight:600}
-.days{display:flex;align-items:flex-end;gap:3px;height:70px}.days div{flex:1;min-width:14px;background:var(--ac);border-radius:3px 3px 0 0;position:relative}.days span{position:absolute;top:-16px;left:0;right:0;text-align:center;font-size:11px;color:var(--mut)}
-.pbar{display:flex;height:12px;border-radius:6px;overflow:hidden;background:#e4e8ec;min-width:220px}.pbar i{display:block;height:100%}
+:root{
+ --paper:#F3F1EA;--sheet:#FCFBF8;--sunk:#EEEBE3;
+ --graphite:#24231F;--graphite-2:#55534C;--pencil:#85827A;--faint:#B4B2A9;
+ --rule:rgba(36,35,31,.11);--rule-2:rgba(36,35,31,.2);--rule-3:rgba(36,35,31,.34);
+ --ink:#1F4E8C;--ink-hover:#183F72;--ink-tint:#E3EBF5;
+ --stamp:#3B6D11;--stamp-tint:#E5EED8;
+ --marker:#E9B949;--marker-tint:#FBEFC6;
+ --redpen:#A32D2D;--redpen-tint:#F7E2E0;
+ --t12:12px;--t14:14px;--t17:17px;--t20:20px;--t24:24px;--t28:28px;
+ --r-s:4px;--r-m:8px;
+ --mono:ui-monospace,"Cascadia Mono","Consolas","SFMono-Regular",Menlo,monospace;
+ --ease:cubic-bezier(.23,1,.32,1);
+ --bg:var(--paper);--card:var(--sheet);--tx:var(--graphite);--mut:var(--pencil);--br:var(--rule-2);--ac:var(--ink);--ok:var(--stamp);--wr:var(--marker);--er:var(--redpen)}
+*{box-sizing:border-box}
+html{-webkit-font-smoothing:antialiased}
+body{margin:0;font:var(--t14)/1.5 "Segoe UI",system-ui,-apple-system,Roboto,Arial,sans-serif;background:var(--paper);color:var(--graphite);font-variant-numeric:tabular-nums}
+a{color:var(--ink);text-decoration:none}a:hover{text-decoration:underline}
+code{font-family:var(--mono);font-size:12px;background:var(--sunk);padding:1px 4px;border-radius:3px}
+h2{font-size:var(--t24);font-weight:600;letter-spacing:-.01em;margin:0;text-wrap:balance}
+h3{font-size:var(--t17);font-weight:600;margin:0}
+h4{font-size:var(--t14);font-weight:600;margin:16px 0 6px}
+input,select,textarea,button{font:inherit;color:inherit}
+input,select,textarea{background:var(--sunk);border:1px solid var(--rule);border-radius:var(--r-s);padding:6px 8px;min-height:32px}
+input::placeholder,textarea::placeholder{color:var(--faint)}
+input:hover,select:hover,textarea:hover{border-color:var(--rule-2)}
+input:focus,select:focus,textarea:focus{outline:none;background:#fff;border-color:var(--ink);box-shadow:0 0 0 3px var(--ink-tint)}
+input[type=checkbox]{min-height:0;accent-color:var(--ink);width:15px;height:15px;vertical-align:-2px;margin:0 6px 0 0}
+input[type=file]{background:none;border:0;padding:0;font-size:var(--t12);color:var(--graphite-2)}
+input:disabled{color:var(--pencil)}
+textarea{width:100%;min-height:150px;font-family:var(--mono);font-size:13px;line-height:1.6;resize:vertical}
+button{background:var(--sheet);border:1px solid var(--rule-2);border-radius:var(--r-s);padding:6px 12px;min-height:32px;cursor:pointer;white-space:nowrap;transition:background-color 120ms var(--ease),border-color 120ms var(--ease),transform 120ms var(--ease)}
+button:hover{border-color:var(--rule-3);background:#fff}
+button:active{transform:scale(.97)}
+button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+button:disabled{opacity:.45;cursor:default;transform:none}
+button.p{background:var(--ink);border-color:var(--ink);color:#fff;font-weight:600}
+button.p:hover{background:var(--ink-hover)}
+button.sign{background:var(--graphite);border-color:var(--graphite);color:#fff;font-weight:600;padding:8px 16px}
+button.sign:hover{background:#000}
+button.d{color:var(--redpen);border-color:rgba(163,45,45,.35)}
+button.d:hover{background:var(--redpen-tint)}
+label{color:var(--graphite-2);font-size:13px}
+details>summary{cursor:pointer;color:var(--graphite-2);font-size:13px;list-style:none;display:inline-flex;gap:6px;align-items:center}
+details>summary::before{content:"?";display:inline-grid;place-items:center;width:16px;height:16px;border:1px solid var(--rule-3);border-radius:50%;font-size:11px;font-weight:600}
+details[open]>summary{margin-bottom:8px}
+.hide{display:none!important}
+
+.app{display:grid;grid-template-columns:232px minmax(0,1fr);min-height:100vh}
+aside{padding:20px 12px;display:flex;flex-direction:column;gap:20px;position:sticky;top:0;height:100vh}
+.brand{padding:0 8px;display:flex;align-items:baseline;gap:8px}
+.brand b{font-size:var(--t17);letter-spacing:-.01em}
+.brand span{font-family:var(--mono);font-size:11px;color:var(--pencil)}
+nav{display:flex;flex-direction:column;gap:2px}
+.navh{display:flex;align-items:center;gap:8px;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--graphite);padding:8px 8px 6px}
+.navh::after{content:"";flex:1;height:1px;background:var(--rule-2)}
+.navh~.navh{margin-top:20px}
+.navh+button{margin-top:2px}
+nav>button{padding-left:12px}
+nav button{border:0;background:none;text-align:left;padding:6px 8px;min-height:32px;color:var(--graphite-2);border-radius:var(--r-s);display:flex;justify-content:space-between;align-items:center}
+nav button:hover{background:rgba(36,35,31,.05);color:var(--graphite)}
+nav button.on{background:rgba(36,35,31,.08);color:var(--graphite);font-weight:600}
+.conn{margin-top:auto;padding:12px 8px 0;border-top:1px solid var(--rule);font-size:var(--t12);color:var(--graphite-2);display:flex;flex-direction:column;gap:8px}
+.conn .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--faint);margin-right:6px;vertical-align:1px}
+.conn.on .dot{background:var(--stamp)}
+.conn #cbase{font-family:var(--mono);font-size:11px;color:var(--pencil);word-break:break-all}
+.conn button{align-self:flex-start;min-height:28px;padding:3px 10px;font-size:var(--t12)}
+
+main{padding:28px 36px 64px;width:100%;border-left:1px solid var(--rule);min-width:0}
+main>*{max-width:1280px}
+section>.head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:16px}
+.lead{color:var(--graphite-2);margin:4px 0 0;max-width:72ch;text-wrap:pretty}
+.card{background:var(--sheet);border:1px solid var(--rule);border-radius:var(--r-m);padding:16px;margin-bottom:16px}
+.card>.card{background:transparent}
+.bar-q{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end}
+.f{display:flex;flex-direction:column;gap:4px}
+.f>span{font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--pencil)}
+.f.grow{flex:1;min-width:220px}.f.grow input{width:100%}
+.opts{display:flex;flex-wrap:wrap;gap:8px 20px;align-items:center;margin-top:12px;padding-top:12px;border-top:1px dashed var(--rule)}
+.help{margin-top:12px;font-size:13px;color:var(--graphite-2);max-width:90ch}
+.help p{margin:0 0 6px}
+.row{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;margin:8px 0}
+.mut{color:var(--pencil)}.ok{color:var(--stamp)}.bad{color:var(--redpen)}
+.warn{color:#8A5A00;background:var(--marker-tint);padding:0 4px;border-radius:3px;font-weight:600;font-size:var(--t12)}
+.od{color:var(--redpen);font-weight:600}
+#lmsg,#tmsg,#dmsg,#prevmsg{font-size:13px}#lmsg:not(:empty),#tmsg:not(:empty){margin-top:10px}
+
+.steps{display:flex;gap:4px;font-size:var(--t12);color:var(--pencil);align-items:center}
+.steps i{font-style:normal;display:inline-grid;place-items:center;width:18px;height:18px;border-radius:50%;border:1px solid var(--rule-3);font-size:11px;margin-right:4px}
+.steps b{font-weight:500;color:var(--graphite)}.steps .sep{width:20px;height:1px;background:var(--rule-2);margin:0 6px}
+
+.tw{overflow:auto;border:1px solid var(--rule);border-radius:var(--r-m);background:var(--sheet)}
+.card .tw{margin:0 -1px}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{padding:8px 12px;text-align:left;vertical-align:top;border-bottom:1px solid var(--rule)}
+th{position:sticky;top:0;z-index:1;background:var(--sheet);font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--pencil);border-bottom-color:var(--rule-2);white-space:nowrap}
+tbody tr:last-child td{border-bottom:0}
+tbody tr:hover td{background:rgba(36,35,31,.025)}
+td .mut{font-size:var(--t12)}
+td.key,td a[href*="/browse/"],.key{font-family:var(--mono);font-size:13px;white-space:nowrap}
+td input{background:transparent}td input:focus{background:#fff}
+td.grp{background:var(--paper)!important;font-weight:600;color:var(--graphite);font-size:var(--t12);letter-spacing:.03em}
+ins{text-decoration:none;color:var(--ink);font-weight:600}
+del{text-decoration:line-through;text-decoration-color:var(--redpen);text-decoration-thickness:1.5px;color:var(--graphite-2)}
+.op{color:var(--pencil);font-size:var(--t12);margin-right:4px}
+
+.chip{display:inline-block;padding:1px 8px;border-radius:3px;font-size:var(--t12);font-weight:500;white-space:nowrap;line-height:1.6;background:var(--sunk);color:var(--graphite-2)}
+.chip a{color:inherit}
+.apply,.c-indeterminate{background:var(--ink-tint);color:var(--ink)}
+.c-done{background:var(--stamp-tint);color:var(--stamp)}
+.skip,.c-new{background:var(--sunk);color:var(--graphite-2)}
+.error,.c-none{background:var(--redpen-tint);color:var(--redpen)}
+
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
+.tile{background:var(--sheet);border:1px solid var(--rule);border-radius:var(--r-m);padding:16px;text-decoration:none!important;color:inherit;display:flex;flex-direction:column;gap:4px;min-height:120px;transition:background-color 120ms var(--ease)}
+.tile:hover{background:#fff}
+.tile>.mut:first-child{font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--pencil)}
+.tile .n{font-size:var(--t28);font-weight:600;letter-spacing:-.02em;line-height:1.15;margin-top:auto;align-self:flex-start;padding:0 2px;border-radius:3px}
+.tile .th{font-size:var(--t12);color:var(--pencil)}
+.tile.warn .n{background:var(--marker-tint);box-shadow:inset 0 -.35em 0 rgba(233,185,73,.45)}
+.tile.crit .n{color:var(--redpen)}
+.tile.crit .th{color:var(--redpen);font-weight:500}
+.tile.err .n{color:var(--faint)}
+.tile.warn{background:var(--sheet);color:inherit;padding:16px;font-size:inherit;font-weight:inherit;border-radius:var(--r-m)}
+.tile.crit{border-color:rgba(163,45,45,.3)}
+
+.bar{height:4px;background:var(--sunk);border-radius:2px;overflow:hidden;margin-top:8px}.bar i{display:block;height:100%;background:var(--ink);transition:width 250ms var(--ease)}
+.pbar{display:flex;height:8px;border-radius:2px;overflow:hidden;background:var(--sunk);min-width:220px}.pbar i{display:block;height:100%}
+.tg{border:0;background:none;padding:0 4px;min-height:0;cursor:pointer;color:var(--pencil)}
+.tg:hover{color:var(--redpen);background:none}
+.lkd{white-space:pre-wrap;font-size:var(--t12);background:var(--paper);border-left:2px solid var(--rule-2);padding:8px 12px;margin:4px 0;font-family:var(--mono)}
+.days{display:flex;align-items:flex-end;gap:2px;height:64px}.days div{flex:1;min-width:10px;max-width:36px;background:var(--ink);opacity:.75;border-radius:2px 2px 0 0;position:relative}.days div:hover{opacity:1}.days span{position:absolute;top:-16px;left:0;right:0;text-align:center;font-size:11px;color:var(--pencil)}
+.sumline{display:flex;flex-wrap:wrap;gap:24px;align-items:baseline;margin:4px 0 8px}
+.big{font-size:var(--t24);font-weight:600;letter-spacing:-.01em}
+#lres>.mut:first-child{padding:8px 12px;font-size:var(--t12)}
+.empty{display:none;border:1px dashed var(--rule-2);border-radius:var(--r-m);padding:40px 24px;text-align:center;color:var(--graphite-2)}
+.empty b{display:block;color:var(--graphite);font-size:var(--t17);font-weight:600;margin-bottom:4px}
+#prevcard.hide~.empty,#tres.hide~.empty,#lres.hide~.empty,#tiles:empty+.empty{display:block}
+.confirm{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:12px;margin-top:12px;padding-top:12px;border-top:1px solid var(--rule)}
+
+#gate{max-width:560px;margin:8vh auto 0}
+#gate .card{padding:24px}
+#gate .f input{width:100%}
+#gate .stack{display:flex;flex-direction:column;gap:12px;margin-top:16px}
+#connmsg{font-size:13px}
+.lock{font-size:var(--t12);color:var(--pencil);margin-top:16px;padding-top:12px;border-top:1px solid var(--rule)}
+pre{font-family:var(--mono)}
+
+@media (max-width:820px){
+ .app{grid-template-columns:minmax(0,1fr)}
+ main{border-left:0}
+ nav button{gap:8px}
+ aside{position:static;height:auto;flex-direction:row;flex-wrap:wrap;align-items:center;gap:8px;padding:12px;border-right:0;border-bottom:1px solid var(--rule)}
+ nav{flex-direction:row;flex-wrap:wrap;width:100%}.navh{display:none}
+ .conn{margin:0;border:0;padding:0;flex-direction:row;align-items:center}
+ main{padding:20px 16px 48px}
+ section>.head{flex-direction:column;align-items:flex-start}
+ h2{font-size:var(--t20)}
+ .f{min-width:0;max-width:100%}.f select,.f input{max-width:100%}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style></head><body>
-<header>
- <h1>Jira Toolkit <span class="mut" style="font-weight:400;font-size:12px">v0.23</span></h1>
- <input id="base" size="34" placeholder="Адрес Jira, https://jira.company.ru" value="https://jira.moscow.alfaintra.net">
- <input id="token" type="password" size="26" placeholder="Personal Access Token" autocomplete="off">
- <label class="mut"><input id="insecure" type="checkbox" checked> не проверять SSL-сертификат</label>
- <button class="p" id="bconn">Подключиться</button><button id="bdisc" class="hide">Отключиться</button>
- <span id="connmsg" class="mut">Токен хранится только в памяти этого приложения и уходит только в вашу Jira.</span>
-</header>
+<div class="app">
+<aside>
+ <div class="brand"><b>Jira Toolkit</b><span>v0.24</span></div>
+ <nav>
+  <div class="navh">Смотреть</div>
+  <button data-t="lk">Связанные задачи</button>
+  <button data-t="tree">Структура эпика</button>
+  <button data-t="dash">Метрики</button>
+  <div class="navh w" title="Разделы, которые пишут в Jira">Менять в Jira</div>
+  <button data-t="bulk" class="on w" title="Пишет в Jira">Массовые изменения</button>
+  <button data-t="dg" class="w" title="Пишет в Jira">Доски в Jira</button>
+  <button data-t="jr" class="w" title="Пишет в Jira">Журнал и откат</button>
+ </nav>
+ <div class="conn" id="connbox"><div><span class="dot"></span><span id="cstate">Не подключено</span></div><div id="cbase"></div><button id="bdisc" class="hide">Отключиться</button></div>
+</aside>
 <main>
-<nav><button data-t="bulk" class="on">Массовые изменения</button><button data-t="dash">Дашборд</button><button data-t="tree">Структура эпика</button><button data-t="lk">Связанные задачи</button><button data-t="jr">Журнал и откат</button></nav>
+
+<div id="gate">
+ <div class="card">
+  <h2>Подключение к Jira</h2>
+  <p class="lead">Нужен адрес Jira и ваш Personal Access Token (Jira → профиль → Personal Access Tokens).</p>
+  <div class="stack">
+   <label class="f"><span>Адрес Jira</span><input id="base" placeholder="https://jira.company.ru" value="https://jira.moscow.alfaintra.net"></label>
+   <label class="f"><span>Personal Access Token</span><input id="token" type="password" placeholder="вставьте токен" autocomplete="off"></label>
+   <label><input id="insecure" type="checkbox" checked>Не проверять SSL-сертификат</label>
+   <div class="row"><button class="p" id="bconn">Подключиться</button><span id="connmsg" class="mut"></span></div>
+  </div>
+  <div class="lock">Токен хранится только в памяти программы и уходит только в вашу Jira. Программа доступна только с этого компьютера.</div>
+ </div>
+</div>
 
 <section id="t-bulk">
+ <div class="head"><div><h2>Массовые изменения</h2><p class="lead">Список задач → предпросмотр «было → станет» → запись. Каждая запись попадает в журнал, её можно откатить.</p></div>
+  <div class="steps"><span><i>1</i><b>Список</b></span><span class="sep"></span><span><i>2</i>Предпросмотр</span><span class="sep"></span><span><i>3</i>Запись</span></div></div>
  <div class="card">
-  <div class="row"><b>1. Что сделать</b>
-   <select id="op"></select>
-   <input id="gval" size="26" placeholder="Значение для всех строк (если нет в списке)">
-   <label class="mut">пауза между задачами, с <input id="pause" type="number" step="0.1" min="0.2" value="0.5" style="width:70px"></label></div>
-  <div class="mut">Вставьте список (можно прямо из Excel): <code>ключ</code> или <code>ключ  значение</code>, по одной задаче в строке. Разделитель: Tab, «;» или «,».</div>
-  <textarea id="rows" placeholder="INCIDENT-239	КН&#10;INCIDENT-240	КН"></textarea>
-  <div class="row"><input type="file" id="file" accept=".csv,.txt,.tsv"> <button class="p" id="bprev">2. Предпросмотр</button><span id="prevmsg" class="mut"></span></div>
+  <div class="bar-q">
+   <label class="f"><span>Операция</span><select id="op"></select></label>
+   <label class="f grow"><span>Значение для всех строк</span><input id="gval" placeholder="если значение не указано в списке"></label>
+  </div>
+  <div style="margin-top:12px"><textarea id="rows" placeholder="INCIDENT-239	КН&#10;INCIDENT-240	КН"></textarea></div>
+  <div class="row" style="justify-content:space-between">
+   <div class="row" style="margin:0"><input type="file" id="file" accept=".csv,.txt,.tsv"><label>пауза, с <input id="pause" type="number" step="0.1" min="0.2" value="0.5" style="width:64px"></label></div>
+   <div class="row" style="margin:0"><span id="prevmsg" class="mut"></span><button class="p" id="bprev">Предпросмотр</button></div>
+  </div>
+  <details class="help"><summary>Формат списка</summary><p>По одной задаче в строке: <code>ключ</code> или <code>ключ  значение</code>. Можно вставить прямо из Excel. Разделитель: Tab, «;» или «,». Строка-заголовок «ключ» пропускается.</p><p>Сначала пробуйте на 1–2 задачах.</p></details>
  </div>
  <div class="card hide" id="prevcard">
-  <div class="row"><b>Предпросмотр</b><span id="prevsum" class="mut"></span></div>
-  <div style="max-height:380px;overflow:auto"><table><thead><tr><th>Задача</th><th>Заголовок</th><th>Сейчас</th><th>Операция</th><th>Результат</th></tr></thead><tbody id="prevbody"></tbody></table></div>
-  <div class="row"><label><input type="checkbox" id="conf"> Понимаю, что изменения будут записаны в Jira (журнал сохранится, откат доступен)</label>
-   <button class="p" id="bapply" disabled>3. Записать в Jira</button></div>
+  <div class="row" style="margin-top:0"><h3>Предпросмотр</h3><span id="prevsum" class="mut"></span></div>
+  <div class="tw" style="max-height:420px"><table><thead><tr><th>Задача</th><th>Заголовок</th><th>Сейчас</th><th>Изменение</th><th>Итог</th></tr></thead><tbody id="prevbody"></tbody></table></div>
+  <div class="confirm"><label><input type="checkbox" id="conf">Понимаю, что изменения будут записаны в Jira. Журнал сохранится, откат доступен.</label>
+   <button class="sign" id="bapply" disabled>Записать в Jira</button></div>
  </div>
+ <div class="empty"><b>Здесь появится предпросмотр</b>Вставьте список задач и нажмите «Предпросмотр». В Jira ничего не запишется, пока вы не подтвердите.</div>
  <div class="card hide" id="jobcard">
-  <div class="row"><b id="jobtitle">Выполнение</b><span id="jobsum" class="mut"></span><button id="bcancel">Остановить</button></div>
+  <div class="row" style="margin-top:0"><h3 id="jobtitle">Запись в Jira</h3><span id="jobsum" class="mut"></span><button id="bcancel" style="margin-left:auto">Остановить</button></div>
   <div class="bar"><i id="jobbar" style="width:0%"></i></div>
-  <div id="jobres" style="max-height:340px;overflow:auto;margin-top:8px"></div>
+  <div id="jobres" class="tw" style="max-height:340px;margin-top:12px"></div>
  </div>
+</section>
+
+<section id="t-dg" class="hide">
+ <div class="head"><div><h2>Доски в Jira</h2><p class="lead">Создаёт фильтры и два дашборда по проектам: «Рабочий» и «Статистика разбора потока». Сначала покажет план, потом создаст.</p></div></div>
+ <div class="card">
+  <div class="bar-q">
+   <label class="f grow"><span>Проекты</span><input id="dgp" placeholder="INCIDENT, OPERNAP"></label>
+   <label class="f"><span>Типы задач</span><input id="dgt" size="16" placeholder="необязательно"></label>
+   <label class="f"><span>Компоненты</span><input id="dgc" size="16" placeholder="необязательно"></label>
+   <button class="p" id="dgprev">Показать план</button>
+  </div>
+  <div class="opts">
+   <label>период «Рабочего», дн. <input id="dgd" type="number" value="30" min="1" max="365" style="width:64px"></label>
+   <label>период статистики, дн. <input id="dgdf" type="number" value="90" min="7" max="730" style="width:64px"></label>
+   <label>если дашборд уже есть <select id="dgex"><option value="skip">пропустить</option><option value="new">создать новый</option></select></label>
+  </div>
+ </div>
+ <div id="dgplan" class="hide">
+  <div class="card">
+   <h3>План</h3>
+   <div class="bar-q" style="margin-top:12px">
+    <label class="f grow"><span>Доска 1 — название</span><input id="dgn1"></label>
+    <label class="f grow"><span>Доска 2 — название</span><input id="dgn2"></label>
+   </div>
+   <details class="help"><summary>Jira не даёт создать дашборд сама?</summary>
+    <p>Создайте в Jira два пустых рабочих стола («Рабочий стол → Создать панель») и вставьте ссылки ниже. Программа создаст фильтры и добавит гаджеты в эти доски. Иначе оставьте поля пустыми.</p>
+    <div class="bar-q"><label class="f grow"><span>Ссылка на доску 1</span><input id="dgi1"></label><label class="f grow"><span>Ссылка на доску 2</span><input id="dgi2"></label></div>
+    <div class="row"><button id="dgprobe">Проверить API гаджетов</button><span class="mut">только чтение, ничего не меняет</span></div>
+    <div id="dgprobeout"></div>
+   </details>
+   <div class="tw" style="max-height:520px;margin-top:12px"><table><thead><tr><th></th><th>Виджет</th><th>Тип гаджета</th><th>Фильтр (JQL)</th></tr></thead><tbody id="dgbody"></tbody></table></div>
+   <div class="confirm"><span id="dgsum" class="mut"></span><button class="sign" id="dgmk">Создать в Jira</button></div>
+   <div id="dgwarn" class="mut" style="font-size:13px"></div>
+  </div>
+ </div>
+ <div id="dgres"></div>
 </section>
 
 <section id="t-dash" class="hide">
+ <div class="head"><div><h2>Метрики</h2><p class="lead">Числа по JQL-запросам с порогами, наборы под роль в проекте.</p></div><span id="dmsg" class="mut"></span></div>
  <div class="card">
-  <b>Создать рабочие доски в Jira</b>
-  <div class="mut">Программа создаёт в Jira сохранённые фильтры по проектам и два рабочих стола с готовыми гаджетами: «Рабочий» (не закрытые задачи, графики) и «Статистика разбора потока» (создано/закрыто по периодам, время решения, разрезы).</div>
-  <div class="row"><b>Проекты</b><input id="dgp" size="24" placeholder="напр. INCIDENT, OPERNAP">
-   <label class="mut">типы задач <input id="dgt" size="18" placeholder="необязательно, через запятую"></label>
-   <label class="mut">компоненты <input id="dgc" size="18" placeholder="необязательно"></label></div>
-  <div class="row"><label class="mut">период «Рабочего», дней <input id="dgd" type="number" value="30" min="1" max="365" style="width:70px"></label>
-   <label class="mut">период статистики, дней <input id="dgdf" type="number" value="90" min="7" max="730" style="width:70px"></label>
-   <label class="mut">если дашборд уже есть <select id="dgex"><option value="skip">пропустить</option><option value="new">создать новый</option></select></label>
-   <button class="p" id="dgprev">Показать, что будет создано</button></div>
-  <div id="dgplan" class="hide">
-   <div class="row"><b>Названия</b><input id="dgn1" size="40"><input id="dgn2" size="40"></div>
-   <div class="row"><b>Пустые доски из Jira</b><input id="dgi1" size="40" placeholder="ссылка на доску 1 (Рабочий)"><input id="dgi2" size="40" placeholder="ссылка на доску 2 (Статистика)"></div>
-   <div class="row"><button id="dgprobe">Проверить API гаджетов</button><span class="mut">диагностика: только чтение, ничего не меняет</span></div>
-   <div id="dgprobeout"></div>
-   <div class="mut">Если Jira не даёт создать дашборд автоматически: создайте в Jira два пустых рабочих стола («Рабочий стол → Создать панель») и вставьте их ссылки сюда. Программа создаст фильтры и добавит гаджеты в эти доски. Поля можно оставить пустыми.</div>
-   <div style="max-height:560px;overflow:auto"><table><thead><tr><th></th><th>Виджет</th><th>Тип гаджета</th><th>Фильтр (JQL)</th></tr></thead><tbody id="dgbody"></tbody></table></div>
-   <div id="dgsum" class="mut" style="margin:6px 0"></div>
-   <div class="row"><button class="p" id="dgmk">Создать рабочие доски в Jira</button><span id="dgwarn" class="mut"></span></div>
+  <div class="bar-q">
+   <label class="f"><span>Роль</span><select id="role"></select></label>
+   <label class="f"><span>Проект</span><input id="proj" size="14" placeholder="INCIDENT" class="key"></label>
+   <button class="p" id="drun">Обновить</button>
   </div>
-  <div id="dgres"></div>
  </div>
- <div class="card">
-  <div class="row"><b>Роль</b><select id="role"></select><b>Проект</b><input id="proj" size="12" placeholder="напр. INCIDENT">
-   <button class="p" id="drun">Обновить метрики</button><button id="dsave">Сохранить настройки</button><span id="dmsg" class="mut"></span></div>
-  <div class="mut">Карточка = запрос JQL + пороги. Количество ≥ «внимание» — жёлтая, ≥ «критично» — красная (0 — порог выключен). <code>{PROJECT}</code> подставляется из поля «Проект».</div>
-  <table><thead><tr><th>Название</th><th>JQL</th><th>Внимание</th><th>Критично</th><th></th></tr></thead><tbody id="cardsbody"></tbody></table>
-  <div class="row"><button id="dadd">+ Карточка</button></div>
- </div>
- <div class="tiles" id="tiles"></div>
+ <div id="tiles" class="tiles"></div>
+ <div class="empty"><b>Метрики ещё не считались</b>Выберите роль и проект, затем нажмите «Обновить».</div>
+ <details class="card" style="margin-top:16px"><summary>Настроить карточки</summary>
+  <p class="help" style="margin-top:0">Карточка = запрос JQL и пороги. Число ≥ «внимание» выделяется маркером, ≥ «критично» — красным (0 — порог выключен). <code>{PROJECT}</code> подставляется из поля «Проект».</p>
+  <div class="tw"><table><thead><tr><th>Название</th><th>JQL</th><th>Внимание</th><th>Критично</th><th></th></tr></thead><tbody id="cardsbody"></tbody></table></div>
+  <div class="row"><button id="dadd">+ Карточка</button><button id="dsave">Сохранить настройки</button></div>
+ </details>
 </section>
 
 <section id="t-tree" class="hide">
+ <div class="head"><div><h2>Структура эпика</h2><p class="lead">Дерево задач, подзадач и связей со статусами, датами и временем в работе.</p></div></div>
  <div class="card">
-  <div class="row"><b>Основной эпик</b><input id="tkey" size="16" placeholder="напр. ALFAMLM4-100">
-   <label class="mut">глубина <select id="tdepth"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option></select></label>
-   <label class="mut"><input type="checkbox" id="tlinks" checked> включать связи между задачами (blocks, relates и др.)</label>
-   <label class="mut">максимум задач <input id="tmax" type="number" value="300" min="10" max="1000" style="width:80px"></label>
-   <button class="p" id="tgo">Собрать структуру</button><button id="tcsv" class="hide">Скачать CSV</button><button id="tcancel" class="hide">Остановить</button></div>
-  <div class="row hide" id="tmkrow"><b>Структура в Jira</b><input id="tsname" size="70" placeholder="Название структуры">
-   <button class="p" id="tmk">Создать структуру в Jira</button></div>
-  <div class="mut">Дерево строится от эпика: задачи эпика, подзадачи и связанные задачи на указанную глубину. Каждая задача показана один раз — под тем, через кого найдена.
-   «Начало» — первый переход в статус категории «В работе» по истории задачи (≈ — оценка по дате создания, если истории нет). «В работе» — календарные дни от начала до завершения или до сегодня.</div>
-  <details id="tfrm" class="hide"><summary><b>Столбец «Дней в работе» в Structure</b></summary>
-   <div class="mut">В Structure нет готового столбца с днями в работе. Его добавляют один раз: откройте созданную структуру → «+» справа от заголовков столбцов → Formula → вставьте формулу ниже, назовите столбец «Дней в работе», формат Number. Потом сохраните это представление (View) и используйте для других структур. Считается от первого перехода в статус категории «В работе» (список статусов взят из вашей Jira) до решения или до сегодня, в календарных днях.</div>
-   <textarea id="tfrmtxt" rows="5" style="width:100%;font-family:monospace;font-size:12px" readonly></textarea>
+  <div class="bar-q">
+   <label class="f"><span>Эпик</span><input id="tkey" size="18" placeholder="ALFAMLM4-100" class="key"></label>
+   <label class="f"><span>Глубина</span><select id="tdepth"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option></select></label>
+   <label class="f"><span>Максимум задач</span><input id="tmax" type="number" value="300" min="10" max="1000" style="width:90px"></label>
+   <button class="p" id="tgo">Собрать</button><button id="tcancel" class="hide">Остановить</button><button id="tcsv" class="hide">Скачать CSV</button>
+  </div>
+  <div class="opts"><label><input type="checkbox" id="tlinks" checked>Включать связи между задачами (blocks, relates и др.)</label>
+   <details class="help" style="margin:0"><summary>Как считаются даты</summary><p>Каждая задача показана один раз — под той, через которую найдена. «Начало» — первый переход в статус категории «В работе» (≈ — оценка по дате создания, если истории нет). «В работе» — календарные дни от начала до завершения или до сегодня.</p></details></div>
+  <div class="opts hide" id="tmkrow"><label class="f grow"><span>Структура в Jira (плагин Structure)</span><input id="tsname" placeholder="Название структуры"></label>
+   <button class="sign" id="tmk" style="align-self:flex-end">Создать структуру в Jira</button></div>
+  <details id="tfrm" class="help hide"><summary>Столбец «Дней в работе» в Structure</summary>
+   <p>Добавляется один раз: откройте структуру → «+» справа от заголовков → Formula → вставьте формулу, назовите «Дней в работе», формат Number. Сохраните представление (View) и используйте его для других структур.</p>
+   <textarea id="tfrmtxt" rows="5" style="min-height:90px;font-size:12px" readonly></textarea>
    <div class="row"><button id="tfrmcp">Скопировать формулу</button><span id="tfrmmsg" class="mut"></span></div>
-   <div class="mut">Формула не проверялась на вашем Structure. Имена <code>resolved</code>, <code>status</code> и <code>created</code> подсвечиваются красным, пока не привязаны к полям: в блоке «Имена» под формулой нажмите на каждое и выберите атрибут («Дата резолюции», «Статус», «Создано»). Для задач, созданных сразу в рабочем статусе, началом считается дата создания. Если ругнётся на <code>DAYS_BETWEEN</code>, пришлите текст ошибки.</div>
+   <p>Имена <code>resolved</code>, <code>status</code>, <code>created</code> подсвечены красным, пока не привязаны: в блоке «Имена» выберите «Дата резолюции», «Статус», «Создано». Если ругнётся на <code>DAYS_BETWEEN</code>, пришлите текст ошибки.</p>
   </details>
   <div id="tmsg" class="mut"></div>
  </div>
  <div class="card hide" id="tsum"></div>
- <div class="card hide" id="tres" style="overflow:auto"></div>
+ <div class="tw hide" id="tres"></div>
+ <div class="empty"><b>Укажите эпик</b>Программа обойдёт задачи эпика, подзадачи и связи на выбранную глубину.</div>
 </section>
+
 <section id="t-lk" class="hide">
+ <div class="head"><div><h2>Связанные задачи</h2><p class="lead">Все задачи, связанные с указанной: дата, статус и нужные поля Jira. Выгрузка в CSV для Excel.</p></div></div>
  <div class="card">
-  <div class="row"><b>Задача</b><input id="lkey" size="16" placeholder="напр. INCIDENT-1027">
-   <label class="mut">доп. фильтр JQL <input id="ljql" size="30" placeholder="необязательно, напр. project = OPERNAP"></label>
-   <label class="mut">максимум <input id="lmax" type="number" value="1000" min="10" max="5000" style="width:80px"></label></div>
-  <div class="row"><label class="mut">поля Jira в колонки <input id="lfields" size="44" value="Наименование клиента, ID Клиента" title="Названия полей как в Jira или id (customfield_12345), через запятую"></label>
-   <label class="mut"><input type="checkbox" id="lparse" checked> искать КУС по ссылке в описании</label>
-   <button class="p" id="lgo">Собрать</button><button id="lcsv" class="hide">Скачать CSV</button><button id="lcancel" class="hide">Остановить</button></div>
-  <div class="mut">Выгружает все задачи, связанные с указанной (любой тип связи): дата создания, статус, значения выбранных полей.
-   КУС клиента берётся из поля «Наименование клиента». КУС по ссылке партнёра в отдельном поле не хранится — программа ищет его в описании (6 символов латиница/цифры, рядом слово «ссылка»).
-   Если в описании не сказано, какой это КУС, строка помечается <span class="warn">проверить</span>; значение можно поправить прямо в таблице, правка попадёт в CSV.</div>
+  <div class="bar-q">
+   <label class="f"><span>Задача</span><input id="lkey" size="18" placeholder="INCIDENT-1027" class="key"></label>
+   <label class="f grow"><span>Доп. фильтр JQL</span><input id="ljql" placeholder="project = OPERNAP"></label>
+   <button class="p" id="lgo">Собрать</button><button id="lcancel" class="hide">Остановить</button><button id="lcsv" class="hide">Скачать CSV</button>
+  </div>
+  <div class="opts">
+   <label>поля в колонки <input id="lfields" size="40" value="Наименование клиента, ID Клиента" title="Названия полей как в Jira или id (customfield_12345), через запятую"></label>
+   <label>максимум <input id="lmax" type="number" value="1000" min="10" max="5000" style="width:80px"></label>
+   <label><input type="checkbox" id="lparse" checked>Искать КУС по ссылке в описании</label>
+   <details class="help" style="margin:0"><summary>Как ищется КУС</summary><p>КУС клиента берётся из поля «Наименование клиента». КУС по ссылке партнёра ищется в описании: 6 символов латиница/цифры рядом со словом «ссылка». Если не сказано явно, строка помечается <span class="warn">проверить</span>; значение можно поправить в таблице, правка попадёт в CSV.</p></details>
+  </div>
   <div id="lmsg" class="mut"></div>
  </div>
  <div class="card hide" id="lsum"></div>
- <div class="card hide" id="lres" style="overflow:auto"></div>
+ <div class="tw hide" id="lres"></div>
+ <div class="empty"><b>Укажите задачу</b>Например, INCIDENT-1027 — получите все связанные с ней задачи с КУС и статусами.</div>
 </section>
+
 <section id="t-jr" class="hide">
- <div class="card"><b>Журналы изменений</b> <span class="mut">(папка jira_toolkit_data рядом с программой)</span>
-  <table><thead><tr><th>Журнал</th><th>Создан</th><th>Изменений</th><th></th></tr></thead><tbody id="jrbody"></tbody></table></div>
- <div class="card hide" id="jrjob"><div class="row"><b id="jrtitle"></b><span id="jrsum" class="mut"></span></div><div class="bar"><i id="jrbar" style="width:0%"></i></div><div id="jrres" style="max-height:300px;overflow:auto;margin-top:8px"></div></div>
+ <div class="head"><div><h2>Журнал и откат</h2><p class="lead">Каждая запись в Jira сохраняется в папке <code>jira_toolkit_data</code> рядом с программой. Откат возвращает задачи в состояние до записи.</p></div></div>
+ <div class="tw"><table><thead><tr><th>Журнал</th><th>Создан</th><th>Изменений</th><th></th></tr></thead><tbody id="jrbody"><tr><td colspan="4" class="mut">Журналы появятся после подключения</td></tr></tbody></table></div>
+ <div class="card hide" id="jrjob" style="margin-top:16px"><div class="row" style="margin-top:0"><h3 id="jrtitle"></h3><span id="jrsum" class="mut"></span></div><div class="bar"><i id="jrbar" style="width:0%"></i></div><div id="jrres" class="tw" style="max-height:300px;margin-top:12px"></div></div>
 </section>
 </main>
+</div>
 <script>
 const SECRET="__SECRET__";
 const $=id=>document.getElementById(id);
@@ -1200,21 +1391,31 @@ async function api(path,body){
   if(!r.ok)throw new Error(j.error||("HTTP "+r.status));return j;
 }
 const OPS={component_add:"Добавить компонент",component_if_empty:"Поставить компонент, только если компонентов нет",label_add:"Добавить метку",label_remove:"Убрать метку",comment_add:"Добавить комментарий"};
+const OPK={component_add:["Компонент","+"],component_if_empty:["Компонент","+"],label_add:["Метка","+"],label_remove:["Метка","-"],comment_add:["Комментарий","+"]};
+function opCell(op,v){const k=OPK[op]||[OPS[op]||op,"+"];
+  return `<span class="op">${esc(k[0])}</span>`+(k[1]==="-"?`<del>${esc(v)}</del>`:`<ins>${op==="comment_add"?"":"+ "}${esc(v)}</ins>`);}
+function plural(n,a,b,c){const m=n%10,h=n%100;return m===1&&h!==11?a:(m>=2&&m<=4&&(h<10||h>=20))?b:c;}
 $("op").innerHTML=Object.entries(OPS).map(([k,v])=>`<option value="${k}">${v}</option>`).join("");
 let connected=false;
+let curTab="bulk";
+function showTab(t){curTab=t;
+  document.querySelectorAll("nav button").forEach(x=>x.classList.toggle("on",x.dataset.t===t));
+  ["bulk","dg","dash","tree","lk","jr"].forEach(k=>$("t-"+k).classList.toggle("hide",!connected||k!==t));
+  $("gate").classList.toggle("hide",connected);
+  if(t==="jr")loadJournals();}
 function setConn(s){connected=!!s.connected;
-  $("connmsg").className=connected?"ok":"mut";
-  $("connmsg").textContent=connected?("Подключено: "+(s.user||"")+" · "+s.base):"Токен хранится только в памяти этого приложения и уходит только в вашу Jira.";
-  $("bconn").classList.toggle("hide",connected);$("bdisc").classList.toggle("hide",!connected);
-  $("token").classList.toggle("hide",connected);$("base").disabled=connected;}
+  $("connbox").classList.toggle("on",connected);
+  $("cstate").textContent=connected?("Подключено"+(s.user?": "+s.user:"")):"Не подключено";
+  $("cbase").textContent=connected?String(s.base||"").replace(/^https?:\/\//,""):"";
+  $("bdisc").classList.toggle("hide",!connected);
+  $("connmsg").className="mut";$("connmsg").textContent="";
+  showTab(curTab);}
+$("token").addEventListener("keydown",e=>{if(e.key==="Enter")$("bconn").click();});
 $("bconn").onclick=async()=>{$("connmsg").className="mut";$("connmsg").textContent="Проверяю...";
   try{const j=await api("/api/connect",{base:$("base").value,token:$("token").value,insecure:$("insecure").checked});
     $("token").value="";setConn(j);loadJournals();}catch(e){$("connmsg").className="bad";$("connmsg").textContent="Ошибка: "+e.message;}};
 $("bdisc").onclick=async()=>{await api("/api/disconnect",{});setConn({connected:false});};
-document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>{
-  document.querySelectorAll("nav button").forEach(x=>x.classList.toggle("on",x===b));
-  ["bulk","dash","tree","lk","jr"].forEach(t=>$("t-"+t).classList.toggle("hide",t!==b.dataset.t));
-  if(b.dataset.t==="jr")loadJournals();});
+document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>showTab(b.dataset.t));
 $("file").onchange=e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{$("rows").value=r.result;};r.readAsText(f,"utf-8");};
 
 /* ---- массовые изменения ---- */
@@ -1232,9 +1433,10 @@ $("bprev").onclick=async()=>{
   $("prevmsg").textContent="Читаю задачи...";$("bapply").disabled=true;$("conf").checked=false;
   try{const j=await api("/api/bulk/preview",{rows:lastRows});
     const c={apply:0,skip:0,error:0};
-    $("prevbody").innerHTML=j.rows.map(r=>{c[r.action]++;return `<tr><td>${esc(r.key)}</td><td>${esc(r.summary)}</td><td>${esc(r.current)}</td>
-      <td>${esc(OPS[r.op]||r.op)}: <b>${esc(r.value)}</b></td><td><span class="chip ${r.action}">${r.action==="apply"?"записать":r.action==="skip"?"пропуск":"ошибка"}</span> ${esc(r.reason)}</td></tr>`;}).join("");
-    $("prevsum").textContent=`к записи: ${c.apply} · пропуск: ${c.skip} · ошибок: ${c.error}`;
+    $("prevbody").innerHTML=j.rows.map(r=>{c[r.action]++;return `<tr><td class="key">${esc(r.key)}</td><td>${esc(r.summary)}</td><td class="mut">${esc(r.current)||"—"}</td>
+      <td style="white-space:nowrap">${opCell(r.op,r.value)}</td><td><span class="chip ${r.action}">${r.action==="apply"?"к записи":r.action==="skip"?"пропуск":"ошибка"}</span> <span class="mut">${esc(r.reason)}</span></td></tr>`;}).join("");
+    $("prevsum").textContent=`к записи ${c.apply} · пропуск ${c.skip} · ошибок ${c.error}`;
+    $("bapply").textContent=c.apply?`Записать ${c.apply} ${plural(c.apply,"изменение","изменения","изменений")} в Jira`:"Нечего записывать";
     $("prevcard").classList.remove("hide");$("prevmsg").textContent="";$("bapply").dataset.n=c.apply;
   }catch(e){$("prevmsg").textContent="Ошибка: "+e.message;}};
 $("conf").onchange=()=>{$("bapply").disabled=!($("conf").checked&&+($("bapply").dataset.n||0)>0);};
@@ -1244,7 +1446,7 @@ async function poll(jid,ui){
     const pct=j.total?Math.round(100*j.done/j.total):0;
     $(ui.bar).style.width=pct+"%";$(ui.sum).textContent=`${j.done} из ${j.total} · ошибок: ${j.failed} · ${j.status}`;
     if(j.status!=="running"){$(ui.res).innerHTML=`<table><thead><tr><th>Задача</th><th>Операция</th><th>Результат</th><th>Детали</th></tr></thead><tbody>`+
-      j.results.map(r=>`<tr><td>${esc(r.key)}</td><td>${esc(OPS[r.op]||r.op)}: ${esc(r.value)}</td><td>${esc(r.result)}</td><td>${esc(r.details)}</td></tr>`).join("")+`</tbody></table>`+
+      j.results.map(r=>`<tr><td class="key">${esc(r.key)}</td><td>${opCell(r.op,r.value)}</td><td>${esc(r.result)}</td><td>${esc(r.details)}</td></tr>`).join("")+`</tbody></table>`+
       (j.error?`<div class="bad">${esc(j.error)}</div>`:"");return j;}
     await new Promise(r=>setTimeout(r,1000));}}
 $("bapply").onclick=async()=>{
@@ -1258,7 +1460,7 @@ $("bcancel").onclick=()=>{if(curJob)api("/api/job/"+curJob+"/cancel",{});};
 async function loadJournals(){
   if(!connected)return;
   try{const j=await api("/api/journals");
-    $("jrbody").innerHTML=j.map(x=>`<tr><td>${esc(x.id)}</td><td>${esc(x.created)}</td><td>${x.count}</td><td><button class="d" data-j="${esc(x.id)}">Откатить</button></td></tr>`).join("")||`<tr><td colspan="4" class="mut">Пока нет</td></tr>`;
+    $("jrbody").innerHTML=j.map(x=>`<tr><td class="key">${esc(x.id)}</td><td>${esc(x.created)}</td><td>${x.count}</td><td><button class="d" data-j="${esc(x.id)}">Откатить</button></td></tr>`).join("")||`<tr><td colspan="4" class="mut">Записей ещё нет — они появятся после первой записи в Jira</td></tr>`;
     document.querySelectorAll("#jrbody button").forEach(b=>b.onclick=async()=>{
       if(!confirm("Откатить изменения из журнала "+b.dataset.j+"? Добавленное будет убрано, убранное - возвращено."))return;
       $("jrjob").classList.remove("hide");$("jrtitle").textContent="Откат "+b.dataset.j;
@@ -1293,7 +1495,7 @@ $("dgprev").onclick=async()=>{$("dgres").innerHTML="";
   try{const b=dgBody();const p=await api("/api/dashgen/preview",b);dgPlan=p;
     $("dgn1").value=p.dash_names.work;$("dgn2").value=p.dash_names.flow;
     const grp=[["work","Доска 1: "+p.dash_names.work],["flow","Доска 2: "+p.dash_names.flow]];
-    $("dgbody").innerHTML=grp.map(([k,t])=>`<tr><td colspan="4" style="background:#e8eefb;font-weight:600">${esc(t)}</td></tr>`+p.gadgets.filter(g=>g.dash===k).map(g=>`<tr><td><input type="checkbox" class="dgsel" value="${esc(g.id)}" checked></td><td>${esc(g.title)}</td><td>${esc(g.kind)}${g.auto?"":' <span class="mut">(вручную)</span>'}</td><td><code>${esc(g.jql)}</code></td></tr>`).join("")).join("");
+    $("dgbody").innerHTML=grp.map(([k,t])=>`<tr><td colspan="4" class="grp">${esc(t)}</td></tr>`+p.gadgets.filter(g=>g.dash===k).map(g=>`<tr><td><input type="checkbox" class="dgsel" value="${esc(g.id)}" checked></td><td>${esc(g.title)}</td><td>${esc(g.kind)}${g.auto?"":' <span class="mut">(вручную)</span>'}</td><td><code>${esc(g.jql)}</code></td></tr>`).join("")).join("");
     dgSum();
     const w=[];if(p.dash_exists.work)w.push("дашборд «"+p.dash_names.work+"» уже есть");if(p.dash_exists.flow)w.push("дашборд «"+p.dash_names.flow+"» уже есть");
     const ef=Object.values(p.filters).filter(f=>f.exists).length;if(ef)w.push("фильтров с такими названиями: "+ef+" (с тем же JQL будут использованы повторно)");
@@ -1321,8 +1523,9 @@ $("drun").onclick=async()=>{
   try{const j=await api("/api/dash/run",{cards:cards,project:$("proj").value.trim()});
     $("tiles").innerHTML=j.cards.map((r,i)=>{const c=cards[i]||{};let cl="";
       if(r.error)cl="err";else if(c.crit&&r.total>=c.crit)cl="crit";else if(c.warn&&r.total>=c.warn)cl="warn";
+      const th=r.error?esc(r.error):cl==="crit"?`выше критичного порога ${c.crit}`:cl==="warn"?`выше порога ${c.warn}`:(c.warn||c.crit)?`порог ${c.warn||"—"} / ${c.crit||"—"}`:"без порога";
       return `<a class="tile ${cl}" ${r.link?`href="${esc(r.link)}" target="_blank" rel="noopener"`:""} title="${esc(r.jql)}"><div class="mut">${esc(r.name)}</div>
-        <div class="n">${r.error?"—":r.total}</div><div class="mut" style="font-size:12px">${esc(r.error||"открыть в Jira")}</div></a>`;}).join("");
+        <div class="n">${r.error?"—":r.total}</div><div class="th">${th}</div></a>`;}).join("");
     $("dmsg").textContent="Обновлено "+new Date().toLocaleTimeString();
   }catch(e){$("dmsg").textContent="Ошибка: "+e.message;}};
 /* ---- структура эпика ---- */
@@ -1384,12 +1587,12 @@ function renderTree(){
   const w=c=>(100*s[c]/tot).toFixed(1)+"%";
   const ex=[...excl];
   $("tsum").innerHTML=`<div class="row"><b>${esc(t.root)}</b><span>задач в структуре: <b>${s.total}</b></span>
-   <span class="pbar"><i style="width:${w("done")};background:var(--ok)"></i><i style="width:${w("indeterminate")};background:var(--ac)"></i><i style="width:${w("new")};background:#8a96a3"></i></span>
+   <span class="pbar"><i style="width:${w("done")};background:var(--ok)"></i><i style="width:${w("indeterminate")};background:var(--ac)"></i><i style="width:${w("new")};background:var(--faint)"></i></span>
    <span>готово ${s.done} · в работе ${s.indeterminate} · к выполнению ${s.new}</span></div>
    <div class="row mut"><span>первое начало: <b>${fmtD(s.first_start)}</b></span><span>завершение структуры: <b>${fmtD(s.last_end)}</b></span>
    <span>среднее время готовых задач: <b>${s.avg_done_days==null?"—":s.avg_done_days+" дн."}</b></span>
    <span class="${s.overdue?"od":""}">просрочено: <b>${s.overdue}</b></span>${s.no_access?`<span class="bad">нет доступа: ${s.no_access}</span>`:""}</div>
-   ${ex.length?`<div class="row"><span class="mut">Убрано из структуры (${ex.length}):</span>${ex.map(k=>`<span class="chip c-new" style="display:inline-flex;gap:4px">${esc(k)} <a href="#" data-rs="${esc(k)}" style="color:#fff" title="Вернуть">↺</a></span>`).join("")}
+   ${ex.length?`<div class="row"><span class="mut">Убрано из структуры (${ex.length}):</span>${ex.map(k=>`<span class="chip c-new" style="display:inline-flex;gap:4px">${esc(k)} <a href="#" data-rs="${esc(k)}" title="Вернуть">↺</a></span>`).join("")}
      <button id="rsall">Вернуть все</button></div>`:""}
    ${t.truncated?`<div class="bad">Достигнут лимит задач: структура неполная. Увеличьте «максимум задач» или уменьшите глубину.</div>`:""}`;
   $("tsum").classList.remove("hide");
@@ -1459,7 +1662,7 @@ function renderLinks(){
      <div class="row mut" style="justify-content:space-between;font-size:11px;margin:2px 0 0"><span>${fmtDT(days[0])}</span><span>${fmtDT(days[days.length-1])}</span></div>`:""}
    ${d.missing.length?`<div class="bad">Не найдены поля: ${esc(d.missing.join(", "))}. Проверьте названия (как в Jira) или укажите id вида customfield_12345.</div>`:""}
    ${d.truncated?`<div class="bad">Показаны первые ${d.rows.length} из ${d.total}. Увеличьте «максимум».</div>`:""}
-   ${ex.length?`<div class="row"><span class="mut">Убрано (${ex.length}):</span>${ex.map(k=>`<span class="chip c-new" style="display:inline-flex;gap:4px">${esc(k)} <a href="#" data-lrs="${esc(k)}" style="color:#fff" title="Вернуть">↺</a></span>`).join("")}<button id="lrsall">Вернуть все</button></div>`:""}
+   ${ex.length?`<div class="row"><span class="mut">Убрано (${ex.length}):</span>${ex.map(k=>`<span class="chip c-new" style="display:inline-flex;gap:4px">${esc(k)} <a href="#" data-lrs="${esc(k)}" title="Вернуть">↺</a></span>`).join("")}<button id="lrsall">Вернуть все</button></div>`:""}
    <div class="row"><input id="lq" size="30" placeholder="Поиск по ключу, КУС, заголовку"><label class="mut"><input type="checkbox" id="lonly"> только «проверить»</label></div>`;
   $("lsum").classList.remove("hide");$("lcsv").classList.remove("hide");
   $("lq").oninput=renderLinkRows;$("lonly").onchange=renderLinkRows;
@@ -1490,7 +1693,7 @@ $("lcsv").onclick=()=>{
   const csv="﻿"+[head].concat(rows).map(r=>r.map(q).join(";")).join("\r\n");
   const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv;charset=utf-8"}));a.download="linked_"+d.root+".csv";a.click();};
 
-api("/api/state").then(s=>{setConn(s);loadDash();}).catch(()=>loadDash().catch(()=>{}));
+api("/api/state").then(s=>{setConn(s);loadDash();}).catch(()=>{setConn({connected:false});loadDash().catch(()=>{});});
 </script></body></html>"""
 
 def main():

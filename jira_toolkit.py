@@ -10,6 +10,8 @@
   * Связанные задачи: выгрузка всех связанных с задачей запросов (дата, статус, поля вроде «Наименование клиента», КУС по ссылке из описания) с выгрузкой в CSV.
   * Структура эпика: дерево задач эпика, подзадач и связей со статусом, датами начала/завершения и временем в работе; выгрузка в CSV;
     раскладка по папкам (проект / тип / исполнитель / статус) и кнопка «Создать структуру в Jira» (плагин Structure, REST API) с теми же папками.
+  * Задачи из анализа: страница системного анализа в Confluence -> черновики задач (анализ СТ и источников, реализация в DWH,
+    доп. места доработки, одна задача на тестирование) по шаблону команды -> предпросмотр -> создание в Jira (по умолчанию AMLM).
 
 Безопасность:
   * приложение слушает ТОЛЬКО 127.0.0.1 (доступно только с этого компьютера);
@@ -27,7 +29,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "jira_toolkit_data")
 os.makedirs(DATA, exist_ok=True)
 SECRET = secrets.token_urlsafe(24)
-STATE = {"base": "", "token": "", "insecure": True, "user": ""}
+STATE = {"base": "", "token": "", "insecure": True, "user": "", "cbase": "", "ctoken": "", "cuser": ""}
 RATE = {"extra": 0.0}
 JOBS = {}
 PC_CACHE = {}
@@ -794,6 +796,368 @@ def create_structure(job_id, name, exclude, layout=None):
         result["warnings"].append("структура создана, но строки не добавлены (" + msg + "). Удалите пустую структуру в «Управление структурами» и пришлите текст ошибки")
     return result
 
+# ---------------------------------------------------------------- Задачи из системного анализа (Confluence -> AMLM)
+from html.parser import HTMLParser as _HTMLParser
+import re as _re_sa
+import html as _html_sa
+
+def conf(method, path, body=None, tries=3):
+    """Запрос к Confluence (отдельный адрес и токен; токен Jira к Confluence не подходит)."""
+    if not STATE.get("ctoken"): raise JiraError(401, "Нет подключения к Confluence")
+    url = STATE["cbase"].rstrip("/") + path
+    ctx = None
+    if STATE["insecure"]:
+        ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
+    last = None
+    for i in range(tries):
+        req = urllib.request.Request(url, method=method)
+        req.add_header("Authorization", "Bearer " + STATE["ctoken"]); req.add_header("Accept", "application/json")
+        data = None
+        if body is not None:
+            req.add_header("Content-Type", "application/json"); data = json.dumps(body).encode("utf-8")
+        try:
+            with urllib.request.urlopen(req, data=data, context=ctx, timeout=60) as r:
+                raw = r.read(); return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as e:
+            txt = e.read().decode("utf-8", "replace")
+            if (e.code == 429 or e.code >= 500) and i < tries - 1:
+                last = JiraError(e.code, txt); time.sleep(2 * (i + 1)); continue
+            raise JiraError(e.code, txt)
+        except urllib.error.URLError as e:
+            if i < tries - 1: last = JiraError(0, str(e)); time.sleep(2 * (i + 1)); continue
+            raise JiraError(0, str(e))
+    raise last
+
+class _StorageParser(_HTMLParser):
+    """Storage-формат Confluence -> плоский список блоков {tag, text}, таблицы -> строки с ячейками.
+    Jira-макрос превращается в ключ задачи, ссылка на страницу - в её название."""
+    BLOCK = {"h1", "h2", "h3", "h4", "h5", "h6", "p", "li"}
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.blocks = []; self.buf = []; self.tag = None
+        self.macro = []          # стек имён макросов
+        self.param = None        # имя текущего ac:parameter
+        self.row = None; self.cell = None; self.table_id = 0; self.tables = []
+        self.link_has_body = []
+    def _flush(self):
+        t = " ".join("".join(self.buf).split())
+        if t and self.cell is None: self.blocks.append({"tag": self.tag or "p", "text": t, "table": None})
+        self.buf = []
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag == "ac:structured-macro": self.macro.append(a.get("ac:name", "")); return
+        if tag == "ac:parameter": self.param = a.get("ac:name", ""); return
+        if tag == "ac:link": self.link_has_body.append(False); return
+        if tag in ("ac:link-body", "ac:plain-text-link-body"):
+            if self.link_has_body: self.link_has_body[-1] = True
+            return
+        if tag == "ri:page" and self.link_has_body:
+            self._pending_title = a.get("ri:content-title", ""); return
+        if tag == "table":
+            self._flush(); self.table_id += 1; self.tables.append([]); return
+        if tag == "tr" and self.tables: self.row = []; return
+        if tag in ("td", "th") and self.row is not None:
+            self._flush(); self.cell = []; return
+        if tag == "br": self.buf.append(" "); return
+        if tag in self.BLOCK:
+            if self.cell is not None: self.cell.append(" "); return
+            self._flush(); self.tag = tag
+    def handle_endtag(self, tag):
+        if tag == "ac:structured-macro":
+            if self.macro: self.macro.pop()
+            return
+        if tag == "ac:parameter": self.param = None; return
+        if tag == "ac:link":
+            has = self.link_has_body.pop() if self.link_has_body else True
+            t = getattr(self, "_pending_title", "")
+            if not has and t: self._text(t)
+            self._pending_title = ""; return
+        if tag in ("td", "th") and self.cell is not None:
+            self.row.append(" ".join("".join(self.cell).split())); self.cell = None; return
+        if tag == "tr" and self.row is not None:
+            if self.tables and any(self.row): self.tables[-1].append(self.row)
+            self.row = None; return
+        if tag == "table":
+            if self.tables and self.tables[-1]:
+                self.blocks.append({"tag": "table", "text": "", "table": self.tables[-1]})
+            return
+        if tag in self.BLOCK and self.cell is None: self._flush(); self.tag = None
+    def _text(self, t):
+        (self.cell if self.cell is not None else self.buf).append(t)
+    def handle_data(self, data):
+        if self.param is not None:
+            if self.macro and self.macro[-1] == "jira" and self.param == "key": self._text(" " + data.strip() + " ")
+            return
+        if self.macro and self.macro[-1] in ("toc", "children", "jira"): return
+        self._text(data)
+    def close(self):
+        super().close(); self._flush()
+
+SEC_RE = _re_sa.compile(r"^(\d+(?:\.\d+)*)\.?\s+(.+)$")
+KEY_RE_SA = _re_sa.compile(r"\b([A-Z][A-Z0-9_]+-\d+)\b")
+TABLE_RE_SA = _re_sa.compile(r"\b([A-Z][A-Z0-9_$]*\.[A-Z][A-Z0-9_$]+)\b")
+DATE_RE_SA = _re_sa.compile(r"\b[cс]\s*(\d{1,2}\.\d{1,2}\.\d{2,4})")
+
+def sa_page_id(url):
+    u = str(url or "").strip()
+    if u.isdigit(): return u
+    m = _re_sa.search(r"pageId=(\d+)", u) or _re_sa.search(r"/pages/(\d+)", u)
+    if m: return m.group(1)
+    m = _re_sa.search(r"/display/([^/]+)/([^?#]+)", u)
+    if m:
+        space, title = m.group(1), urllib.parse.unquote_plus(m.group(2))
+        r = conf("GET", "/rest/api/content?spaceKey=" + urllib.parse.quote(space) + "&title=" + urllib.parse.quote(title))
+        res = r.get("results") or []
+        if res: return str(res[0]["id"])
+    raise JiraError(400, "Не понял ссылку на страницу: нужна ссылка вида .../pages/123456/... или ...pageId=123456")
+
+def sa_parse_storage(title, storage):
+    """Разбор страницы СА по типовому шаблону: ссылки, разделы 3.x, источники из 3.1, примеры сценариев."""
+    p = _StorageParser(); p.feed(storage or ""); p.close()
+    blocks = p.blocks
+    info = {"title": title, "intro": "", "links": [], "sections": [], "sa_sections": [], "sources": [], "examples": [], "is_update": False}
+    m = _re_sa.sub(r"^\s*Мотивация\s+", "", title or "")
+    m = _re_sa.sub(r"\s*\(\s*[cс]\s*\d{1,2}\.\d{1,2}\.\d{2,4}\s*\)\s*$", "", m)
+    info["product"] = m.strip() or (title or "").strip()
+    d = DATE_RE_SA.search(title or ""); info["date"] = d.group(1) if d else ""
+    top, cur_h1, in_dev, in_sa, in_src, in_ex = None, "", False, False, False, False
+    for b in blocks:
+        t, tag = b["text"], b["tag"]
+        if tag == "h1":
+            cur_h1 = t; low = t.lower()
+            in_dev = t.startswith("3.") or "требования на разработку" in low
+            in_sa = t.startswith("2.") or "системный анализ" in low
+            in_ex = "пример" in low; in_src = False
+            continue
+        if not cur_h1 and tag != "table" and t and not info["intro"]:
+            info["intro"] = t
+        if "предыдущей верси" in t.lower(): info["is_update"] = True
+        if cur_h1.lower().startswith("ссылки") and tag != "table":
+            k = KEY_RE_SA.search(t)
+            if k:
+                label = _re_sa.split(r"\s*[-–—:]\s*" + _re_sa.escape(k.group(1)), t)[0].strip(" -–—:")
+                info["links"].append({"label": label or k.group(1), "key": k.group(1)})
+            continue
+        if in_sa and tag in ("h2", "h3"): info["sa_sections"].append(t)
+        if in_dev and tag != "table":
+            s = SEC_RE.match(t)
+            if s and s.group(1).count(".") >= 1 and (tag.startswith("h") or len(t) < 160):
+                num = s.group(1); name = s.group(2).strip()
+                info["sections"].append({"num": num, "name": name})
+                in_src = "источник" in name.lower()
+                continue
+            if tag.startswith("h"): in_src = "источник" in t.lower()
+        if in_src and tag != "table":           # источники абзацами: «Модуль переходов CIDS_MLM_PII.LINKS_STORE__TRANSITION»
+            for f in TABLE_RE_SA.findall(t):
+                sch, _, tb = f.partition(".")
+                if len(sch) >= 3 and len(tb) >= 4 and f not in info["sources"]: info["sources"].append(f)   # отсекаем DD.MM и т.п.
+        if in_src and tag == "table":
+            rows = b["table"]
+            for r in rows[1:] if rows and "источник" in (rows[0][0] if rows[0] else "").lower() else rows:
+                if not r: continue
+                found = TABLE_RE_SA.findall(r[0])
+                for f in (found or [r[0][:120]]):
+                    if f not in info["sources"]: info["sources"].append(f)
+        if in_ex and tag != "table":
+            e = _re_sa.match(r"^Пример\s+\d+\s*[.:]\s*(.+)$", t)
+            if e: info["examples"].append(t.split("*")[0].strip())
+    info["sections"] = [s for s in info["sections"] if s["num"].startswith("3")] or info["sections"]
+    return info
+
+def sa_epic_from_links(links, project):
+    for l in links:
+        if "dwh" in l["label"].lower() and l["key"].startswith(project + "-"): return l["key"]
+    for l in links:
+        if "эпик" in l["label"].lower() and l["key"].startswith(project + "-"): return l["key"]
+    return ""
+
+def wiki_esc(s):
+    """Текст со страницы -> безопасный для wiki-разметки Jira: {N} иначе ломает списки, | ломает таблицы."""
+    return str(s or "").replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}").replace("[", "\\[").replace("]", "\\]")
+
+def wiki_cell(s):
+    return str(s or "").replace("|", "/").strip() or " "
+
+def wiki_table(rows):
+    return "\n".join(f"|{wiki_cell(k)}|{wiki_cell(v)}|" for k, v in rows)
+
+TODO = "⚠ заполнить"
+
+def sa_drafts(info, opts):
+    """Черновики задач: анализ СТ + источников, реализация в DWH, по задаче на каждое доп. место доработки, одна тест-задача."""
+    P = (opts.get("product") or info["product"]).strip()
+    url = info.get("url", "")
+    kind = opts.get("template") or ("rework" if info.get("is_update") else "new")
+    date = info.get("date", "")
+    secs = [s for s in info["sections"] if s["num"] != "3" and "источник" not in s["name"].lower()]
+    sec_lines = "\n".join(f" - {s['num']}. {wiki_esc(s['name'])}" for s in secs) or " - см. раздел 3 страницы"
+    src_lines = "\n".join(f" - {wiki_esc(s)}" for s in info["sources"]) or " - см. раздел 3.1 страницы"
+    sa_lines = "\n".join(f" - {wiki_esc(s)}" for s in info["sa_sections"])
+    intro = wiki_esc(info.get("intro", ""))
+    observe = f"с {date} - дата запуска" if date else TODO
+    out = []
+    # 1. анализ
+    desc = wiki_table([
+        ("Область доработки" if kind == "rework" else "Область разработки", P),
+        ("Описание задачи", "Проанализировать системные требования и источники данных, подтвердить или уточнить алгоритм расчёта до начала разработки.\n"
+                            + (f"{intro}\n" if intro else "") + "Источники (3.1):\n" + src_lines
+                            + ("\nСистемный анализ (раздел 2):\n" + sa_lines if sa_lines else "")),
+        ("Ссылка на confluence", f"[{url}]" if url else TODO),
+        ("Результат", "Подтверждённые источники и алгоритм; вопросы к СА закрыты или зафиксированы в комментариях"),
+    ])
+    out.append({"role": "analysis", "summary": f"{P}: анализ СТ и источников", "description": desc})
+    # 2. реализация
+    body = (f"{intro}\n" if intro else "") + "Реализовать расчёт в DWH по требованиям раздела 3:\n" + sec_lines
+    if kind == "rework":
+        rows = [("Область доработки", P + "\nИсточники:\n" + src_lines), ("Период перерасчета", opts.get("recalc") or "-"),
+                ("Статус решения", opts.get("status") or "Целевое"), ("Описание задачи", body),
+                ("Ссылка на confluence", f"[{url}]" if url else TODO),
+                ("Влияние доработки на процессы", opts.get("impact") or TODO),
+                ("Влияние на процессы, если доработка не будет внедрена", opts.get("noimpact") or TODO),
+                ("Период наблюдения за процессом", observe), ("Требуется ли тестирование бизнес-логики доработки", "да")]
+    else:
+        rows = [("Область разработки", P + "\nИсточники:\n" + src_lines), ("Зачем нужна разработка", opts.get("impact") or TODO),
+                ("Статус решения", opts.get("status") or "Целевое"), ("Описание задачи", body),
+                ("Ссылка на confluence", f"[{url}]" if url else TODO), ("Период наблюдения за процессом", observe),
+                ("Требуется ли тестирование бизнес-логики доработки", "да" + (", " + opts["tester"] if opts.get("tester") else "")),
+                ("Требуется ли загрузка исторических данных", opts.get("history") or TODO)]
+    out.append({"role": "dev", "summary": f"{P}: реализация расчёта в DWH", "description": wiki_table(rows)})
+    # 2a. доп. места доработки (например, бандл)
+    for x in opts.get("extra") or []:
+        nm = " ".join(str(x.get("name") or "").split())[:120]
+        if not nm: continue
+        link = str(x.get("link") or "").strip()
+        rows = [("Область доработки", nm), ("Период перерасчета", opts.get("recalc") or "-"), ("Статус решения", opts.get("status") or "Целевое"),
+                ("Описание задачи", f"Доработка «{nm}» с учётом изменений «{P}»" + (f" (см. {link})" if link else "")),
+                ("Ссылка на confluence", f"[{link}]" if link else (f"[{url}]" if url else TODO)),
+                ("Влияние доработки на процессы", TODO), ("Влияние на процессы, если доработка не будет внедрена", TODO),
+                ("Период наблюдения за процессом", observe), ("Требуется ли тестирование бизнес-логики доработки", "да")]
+        out.append({"role": "extra", "summary": f"{P}: учёт в {nm}", "description": wiki_table(rows)})
+    # 3. тестирование (одна задача)
+    ex = "\n".join(f" - {wiki_esc(e)}" for e in info["examples"]) or " - по примерам сценариев со страницы"
+    places = ", ".join([P] + [" ".join(str(x.get("name") or "").split()) for x in opts.get("extra") or [] if x.get("name")])
+    desc = (f"Подготовить тест-кейсы и протестировать: {places}.\n\nСценарии со страницы СА:\n{ex}\n\n"
+            + (f"Описание: [{url}]" if url else ""))
+    out.append({"role": "test", "summary": f"{P}: тест-кейсы и тестирование", "description": desc})
+    for t in out: t["todo"] = t["description"].count(TODO)
+    return out
+
+def sa_required_fields(project, itype):
+    """Обязательные поля при создании, которые программа не заполняет (Jira 9+ и старый createmeta)."""
+    std = {"project", "issuetype", "summary", "reporter", "description", "components", "labels", "assignee", "priority"}
+    try:
+        its = jira("GET", f"/rest/api/2/issue/createmeta/{urllib.parse.quote(project)}/issuetypes", tries=2)
+        vals = its.get("values") or its.get("issueTypes") or []
+        it = next((x for x in vals if x.get("name") == itype), None)
+        if not it: return None, f"в проекте {project} нет типа задачи «{itype}»"
+        f = jira("GET", f"/rest/api/2/issue/createmeta/{urllib.parse.quote(project)}/issuetypes/{it['id']}?maxResults=200", tries=2)
+        fl = f.get("values") or f.get("fields") or []
+        req = [x.get("name") or x.get("fieldId") for x in fl if x.get("required") and not x.get("hasDefaultValue") and (x.get("fieldId") or x.get("key")) not in std]
+        return req, ""
+    except JiraError as e:
+        if e.code not in (404, 400): return None, str(e)[:160]
+    try:
+        m = jira("GET", "/rest/api/2/issue/createmeta?projectKeys=" + urllib.parse.quote(project) + "&issuetypeNames=" + urllib.parse.quote(itype) + "&expand=projects.issuetypes.fields", tries=2)
+        for pr in m.get("projects", []):
+            for it in pr.get("issuetypes", []):
+                return [v.get("name") or k for k, v in (it.get("fields") or {}).items() if v.get("required") and not v.get("hasDefaultValue") and k not in std], ""
+        return None, f"в проекте {project} нет типа задачи «{itype}»"
+    except JiraError as e:
+        return None, str(e)[:160]
+
+def sa_epic_field():
+    fl = all_fields()
+    for fid, nm in fl.items():
+        if nm.strip().lower() in ("epic link", "ссылка на эпик", "эпик"): return fid
+    return ""
+
+SA_PAGES = {}
+
+def sa_parse(url, project, itype):
+    pid = sa_page_id(url)
+    pg = conf("GET", f"/rest/api/content/{pid}?expand=body.storage,version,space")
+    title = pg.get("title", "")
+    info = sa_parse_storage(title, ((pg.get("body") or {}).get("storage") or {}).get("value", ""))
+    info["id"] = pid; info["version"] = (pg.get("version") or {}).get("number")
+    info["url"] = STATE["cbase"].rstrip("/") + f"/pages/viewpage.action?pageId={pid}"
+    info["space"] = (pg.get("space") or {}).get("key", "")
+    warnings = []
+    epic = sa_epic_from_links(info["links"], project)
+    info["epic"] = epic; info["epic_info"] = None
+    if epic:
+        try:
+            e = jira("GET", f"/rest/api/2/issue/{epic}?fields=summary,status,issuetype", tries=2)["fields"]
+            st = e.get("status") or {}
+            info["epic_info"] = {"summary": e.get("summary", ""), "status": st.get("name", ""), "done": (st.get("statusCategory") or {}).get("key") == "done",
+                                 "type": (e.get("issuetype") or {}).get("name", "")}
+            if info["epic_info"]["done"]: warnings.append(f"Эпик {epic} со страницы уже закрыт ({st.get('name')}). Укажите другой эпик или оставьте поле пустым.")
+        except JiraError as e:
+            warnings.append(f"Эпик {epic} не прочитан: {str(e)[:120]}")
+    else:
+        warnings.append(f"На странице не найден FEATURE-эпик DWH из проекта {project}: укажите эпик вручную.")
+    # уже созданные задачи по этой странице
+    dups = []
+    for q in (f'project = {project} AND text ~ "{pid}"', f'project = {project} AND summary ~ "{info["product"].replace(chr(34), "")}" AND created >= -180d'):
+        try:
+            r = jira("POST", "/rest/api/2/search", {"jql": q + " ORDER BY created DESC", "fields": ["summary", "status", "created"], "maxResults": 20}, tries=2)
+            for it in r.get("issues", []):
+                if it["key"] not in [d["key"] for d in dups]:
+                    dups.append({"key": it["key"], "summary": it["fields"].get("summary", ""), "status": (it["fields"].get("status") or {}).get("name", ""),
+                                 "created": (it["fields"].get("created") or "")[:10]})
+        except JiraError: pass
+    req, err = sa_required_fields(project, itype)
+    if err: warnings.append("Не удалось проверить обязательные поля: " + err)
+    elif req: warnings.append("В Jira есть обязательные поля, которые программа не заполняет: " + ", ".join(req) + ". Создание может не пройти.")
+    if not info["sections"]: warnings.append("На странице не найдены пункты раздела 3 «Требования на разработку» — проверьте описание задач вручную.")
+    if not info["sources"]: warnings.append("Не найдена таблица источников в 3.1 — список источников не заполнен.")
+    tok = secrets.token_urlsafe(8); SA_PAGES[tok] = info
+    return {"page": tok, "info": info, "duplicates": dups, "warnings": warnings, "required": req or []}
+
+def sa_create(body):
+    info = SA_PAGES.get(str(body.get("page", "")))
+    if not info: raise JiraError(400, "Сначала разберите страницу")
+    project = str(body.get("project") or "").strip().upper()
+    if not _re_sa.match(r"^[A-Z][A-Z0-9_]*$", project): raise JiraError(400, "Некорректный ключ проекта")
+    itype = str(body.get("issuetype") or "Задача").strip()
+    epic = str(body.get("epic") or "").strip().upper()
+    if epic and not KEY_RE_SA.fullmatch(epic): raise JiraError(400, "Некорректный ключ эпика")
+    tasks = [t for t in (body.get("tasks") or []) if isinstance(t, dict)][:30]
+    if not tasks: raise JiraError(400, "Нет задач для создания")
+    efield = sa_epic_field() if epic else ""
+    res, created = [], []
+    for t in tasks:
+        summary = " ".join(str(t.get("summary") or "").split())[:250]
+        if not summary: res.append({"summary": "", "error": "пустое название"}); continue
+        f = {"project": {"key": project}, "issuetype": {"name": itype}, "summary": summary, "description": str(t.get("description") or "")[:30000]}
+        a = str(t.get("assignee") or "").strip()
+        if a: f["assignee"] = {"name": a}
+        if efield: f[efield] = epic
+        note = ""
+        try:
+            r = jira("POST", "/rest/api/2/issue", {"fields": f}, tries=2)
+        except JiraError as e:
+            if efield and efield in e.text:          # поле эпика не на экране создания - создаём без него и связываем ссылкой
+                f.pop(efield, None)
+                r = None
+                try:
+                    r = jira("POST", "/rest/api/2/issue", {"fields": f}, tries=2)
+                    jira("POST", "/rest/api/2/issueLink", {"type": {"name": "Relates"}, "inwardIssue": {"key": r["key"]}, "outwardIssue": {"key": epic}}, tries=2)
+                    note = "эпик привязан связью «Relates»: поле «Epic Link» недоступно при создании"
+                except JiraError as e2:
+                    if not r: res.append({"summary": summary, "error": str(e2)[:300]}); continue
+                    note = "эпик не привязан: " + str(e2)[:120]
+            else:
+                res.append({"summary": summary, "error": str(e)[:300]}); continue
+        created.append(r["key"]); res.append({"summary": summary, "key": r["key"], "note": note})
+        time.sleep(0.3 + RATE["extra"])
+    jid = time.strftime("%Y%m%d_%H%M%S")
+    try:
+        with open(os.path.join(DATA, f"created_{jid}.json"), "w", encoding="utf-8") as fh:
+            json.dump({"created": time.strftime("%Y-%m-%d %H:%M:%S"), "page": info.get("url"), "project": project, "epic": epic, "issues": created, "results": res}, fh, ensure_ascii=False, indent=1)
+    except OSError: pass
+    return {"base": STATE["base"], "results": res, "created": len(created), "journal": f"created_{jid}.json"}
+
+
 # ---------------------------------------------------------------- Рабочие доски в Jira (фильтры + дашборды + гаджеты)
 import re as _re_dg
 GADGET_BASE = "rest/gadgets/1.0/g/com.atlassian.jira.gadgets:"
@@ -1106,7 +1470,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(b))); self.send_header("Cache-Control", "no-store"); self.end_headers(); self.wfile.write(b); return
         if not self._auth(): return
-        if path == "/api/state": return self._json({"connected": bool(STATE["token"]), "base": STATE["base"], "user": STATE["user"]})
+        if path == "/api/state": return self._json({"connected": bool(STATE["token"]), "base": STATE["base"], "user": STATE["user"],
+                                                     "cconnected": bool(STATE.get("ctoken")), "cbase": STATE.get("cbase", ""), "cuser": STATE.get("cuser", "")})
         if path == "/api/dash/config": return self._json(load_dash())
         if path.startswith("/api/job/"):
             j = JOBS.get(path.split("/")[-1])
@@ -1142,9 +1507,36 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json({"error": str(e) + hint}, 400)
                 STATE["user"] = me.get("displayName") or me.get("name") or ""
                 return self._json({"connected": True, "base": base, "user": STATE["user"]})
+            if path == "/api/conf/connect":
+                cb = str(body.get("base", "")).strip().rstrip("/")
+                ct = str(body.get("token", "")).strip().strip('"').strip("'").strip()
+                if not cb.startswith("http"): return self._json({"error": "укажите адрес Confluence"}, 400)
+                if not ct or any(ch.isspace() for ch in ct): return self._json({"error": "токен пустой или содержит пробелы"}, 400)
+                STATE.update(cbase=cb, ctoken=ct, cuser="", insecure=bool(body.get("insecure", STATE["insecure"])))
+                try: me = conf("GET", "/rest/api/user/current", tries=2)
+                except JiraError as e:
+                    STATE.update(ctoken="")
+                    hint = " Нужен Personal Access Token из Confluence (профиль → Настройки → Personal Access Tokens)." if e.code in (401, 403) else ""
+                    return self._json({"error": str(e) + hint}, 400)
+                if me.get("type") == "anonymous": STATE.update(ctoken=""); return self._json({"error": "Confluence не принял токен (анонимный доступ)"}, 400)
+                STATE["cuser"] = me.get("displayName") or me.get("username") or ""
+                return self._json({"cconnected": True, "cbase": cb, "cuser": STATE["cuser"]})
             if path == "/api/disconnect":
-                STATE.update(token="", user=""); return self._json({"connected": False})
+                STATE.update(token="", user="", ctoken="", cuser=""); SA_PAGES.clear(); return self._json({"connected": False})
             if not STATE["token"]: return self._json({"error": "сначала подключитесь к Jira"}, 401)
+            if path == "/api/sa/parse":
+                if not STATE.get("ctoken"): return self._json({"error": "сначала подключите Confluence"}, 401)
+                prj = str(body.get("project") or "AMLM").strip().upper()
+                if not _re_sa.match(r"^[A-Z][A-Z0-9_]*$", prj): return self._json({"error": "некорректный ключ проекта"}, 400)
+                return self._json(sa_parse(body.get("url", ""), prj, str(body.get("issuetype") or "Задача").strip()))
+            if path == "/api/sa/draft":
+                info = SA_PAGES.get(str(body.get("page", "")))
+                if not info: return self._json({"error": "сначала разберите страницу"}, 400)
+                opts = {k: str(body.get(k) or "")[:500] for k in ("product", "template", "status", "recalc", "impact", "noimpact", "history", "tester")}
+                opts["extra"] = [{"name": str(x.get("name") or "")[:120], "link": str(x.get("link") or "")[:500]} for x in (body.get("extra") or [])[:10] if isinstance(x, dict)]
+                return self._json({"tasks": sa_drafts(info, opts)})
+            if path == "/api/sa/create":
+                return self._json(sa_create(body))
             if path == "/api/bulk/preview":
                 return self._json({"rows": plan_rows(body.get("rows", []))})
             if path == "/api/bulk/apply":
@@ -1199,7 +1591,7 @@ class Handler(BaseHTTPRequestHandler):
         except JiraError as e: self._json({"error": str(e)}, 502)
         except Exception as e: self._json({"error": "внутренняя ошибка: " + str(e)}, 500)
 
-PAGE = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Jira Toolkit v0.25</title>
+PAGE = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Jira Toolkit v0.26</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
 :root{
@@ -1265,8 +1657,11 @@ nav button:hover{background:rgba(36,35,31,.05);color:var(--graphite)}
 nav button.on{background:rgba(36,35,31,.08);color:var(--graphite);font-weight:600}
 .conn{margin-top:auto;padding:12px 8px 0;border-top:1px solid var(--rule);font-size:var(--t12);color:var(--graphite-2);display:flex;flex-direction:column;gap:8px}
 .conn .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--faint);margin-right:6px;vertical-align:1px}
-.conn.on .dot{background:var(--stamp)}
-.conn #cbase{font-family:var(--mono);font-size:11px;color:var(--pencil);word-break:break-all}
+.conn .cl.on .dot{background:var(--stamp)}
+.conn .cl.err .dot{background:var(--redpen)}
+.conn .cl.err{color:var(--redpen)}
+.conn #cbase,.conn #cfbase{font-family:var(--mono);font-size:11px;color:var(--pencil);word-break:break-all;margin-top:-6px}
+.gsep{margin:6px 0 0;padding-top:14px;border-top:1px dashed var(--rule);font-size:var(--t12);color:var(--pencil)}
 .conn button{align-self:flex-start;min-height:28px;padding:3px 10px;font-size:var(--t12)}
 
 main{padding:28px 36px 64px;width:100%;border-left:1px solid var(--rule);min-width:0}
@@ -1348,6 +1743,7 @@ del{text-decoration:line-through;text-decoration-color:var(--redpen);text-decora
 
 #gate{max-width:560px;margin:8vh auto 0}
 #gate .card{padding:24px}
+#gate #gconf{margin-top:16px}
 #gate .f input{width:100%}
 #gate .stack{display:flex;flex-direction:column;gap:12px;margin-top:16px}
 #connmsg{font-size:13px}
@@ -1370,7 +1766,7 @@ pre{font-family:var(--mono)}
 </style></head><body>
 <div class="app">
 <aside>
- <div class="brand"><b>Jira Toolkit</b><span>v0.25</span></div>
+ <div class="brand"><b>Jira Toolkit</b><span>v0.26</span></div>
  <nav>
   <div class="navh">Смотреть</div>
   <button data-t="lk">Связанные задачи</button>
@@ -1378,24 +1774,38 @@ pre{font-family:var(--mono)}
   <button data-t="dash">Метрики</button>
   <div class="navh w" title="Разделы, которые пишут в Jira">Менять в Jira</div>
   <button data-t="bulk" class="on w" title="Пишет в Jira">Массовые изменения</button>
+  <button data-t="sa" class="w" title="Пишет в Jira">Задачи из анализа</button>
   <button data-t="dg" class="w" title="Пишет в Jira">Доски в Jira</button>
   <button data-t="jr" class="w" title="Пишет в Jira">Журнал и откат</button>
  </nav>
- <div class="conn" id="connbox"><div><span class="dot"></span><span id="cstate">Не подключено</span></div><div id="cbase"></div><button id="bdisc" class="hide">Отключиться</button></div>
+ <div class="conn" id="connbox">
+  <div class="cl" id="cljira"><span class="dot"></span><span id="cstate">Jira: не подключено</span></div><div id="cbase"></div>
+  <div class="cl" id="clconf"><span class="dot"></span><span id="cfstate">Confluence: не подключено</span></div><div id="cfbase"></div>
+  <button id="bdisc" class="hide">Отключиться</button></div>
 </aside>
 <main>
 
 <div id="gate">
  <div class="card">
   <h2>Подключение к Jira</h2>
-  <p class="lead">Нужен адрес Jira и ваш Personal Access Token (Jira → профиль → Personal Access Tokens).</p>
+  <p class="lead">Нужен адрес Jira и ваш Personal Access Token (Jira → профиль → Personal Access Tokens). Этого достаточно для всех разделов, кроме «Задачи из анализа».</p>
   <div class="stack">
    <label class="f"><span>Адрес Jira</span><input id="base" placeholder="https://jira.company.ru" value="https://jira.moscow.alfaintra.net"></label>
-   <label class="f"><span>Personal Access Token</span><input id="token" type="password" placeholder="вставьте токен" autocomplete="off"></label>
+   <label class="f"><span>Personal Access Token Jira</span><input id="token" type="password" placeholder="вставьте токен" autocomplete="new-password"></label>
    <label><input id="insecure" type="checkbox" checked>Не проверять SSL-сертификат</label>
-   <div class="row"><button class="p" id="bconn">Подключиться</button><span id="connmsg" class="mut"></span></div>
+   <div class="row"><button class="p" id="bconn">Подключиться к Jira</button><span id="connmsg" class="mut"></span></div>
   </div>
   <div class="lock">Токен хранится только в памяти программы и уходит только в вашу Jira. Программа доступна только с этого компьютера.</div>
+ </div>
+ <div class="card" id="gconf">
+  <h2>Подключение к Confluence <span class="mut" style="font-size:var(--t14);font-weight:400">— необязательно</span></h2>
+  <p class="lead">Нужен только для раздела «Задачи из анализа». Нужен адрес Confluence и ваш Personal Access Token (Confluence → аватар → Настройки → Personal Access Tokens). Токен Jira сюда не подходит. Подключить можно и позже — в самом разделе.</p>
+  <div class="stack">
+   <label class="f"><span>Адрес Confluence</span><input id="gconfbase" placeholder="https://confluence.company.ru" value="https://confluence.moscow.alfaintra.net"></label>
+   <label class="f"><span>Personal Access Token Confluence</span><input id="gctoken" type="password" placeholder="вставьте токен" autocomplete="new-password"></label>
+   <div class="row"><button class="p" id="gcconn">Подключиться к Confluence</button><span id="gcmsg" class="mut"></span></div>
+  </div>
+  <div class="lock">Токен хранится только в памяти программы и уходит только в ваш Confluence.</div>
  </div>
 </div>
 
@@ -1531,6 +1941,52 @@ pre{font-family:var(--mono)}
  <div class="empty"><b>Укажите задачу</b>Например, INCIDENT-1027 — получите все связанные с ней задачи с КУС и статусами.</div>
 </section>
 
+<section id="t-sa" class="hide">
+ <div class="head"><div><h2>Задачи из анализа</h2><p class="lead">Страница системного анализа в Confluence → декомпозиция → задачи в Jira по шаблону команды.</p></div>
+  <div class="steps"><span><i>1</i><b>Страница</b></span><span class="sep"></span><span><i>2</i>Декомпозиция</span><span class="sep"></span><span><i>3</i>Создание</span></div></div>
+ <div class="card" id="sacon">
+  <div class="bar-q">
+   <label class="f grow"><span>Адрес Confluence</span><input id="confbase" value="https://confluence.moscow.alfaintra.net"></label>
+   <label class="f grow"><span>Personal Access Token Confluence</span><input id="ctoken" type="password" placeholder="токен из Confluence, не из Jira" autocomplete="new-password"></label>
+   <button class="p" id="cconn">Подключиться к Confluence</button>
+  </div>
+  <div id="cmsg" class="mut" style="margin-top:8px"></div>
+  <details class="help"><summary>Где взять токен</summary><p>Confluence → аватар → «Настройки» → «Personal Access Tokens» → «Create token». Токен Jira к Confluence не подходит. Токен хранится только в памяти программы.</p></details>
+ </div>
+ <div class="card">
+  <div class="bar-q">
+   <label class="f grow"><span>Страница системного анализа</span><input id="saurl" placeholder="https://confluence.../pages/3811512924/..."></label>
+   <label class="f"><span>Проект</span><input id="saprj" value="AMLM" size="8" class="key"></label>
+   <label class="f"><span>Тип задачи</span><input id="satype" value="Задача" size="10"></label>
+   <button class="p" id="sago">Разобрать</button>
+  </div>
+  <div id="samsg" class="mut" style="margin-top:8px"></div>
+ </div>
+ <div class="card hide" id="sainfo"></div>
+ <div class="card hide" id="saset">
+  <h3 style="margin-top:0">Параметры задач</h3>
+  <div class="bar-q">
+   <label class="f grow"><span>Продукт (начало названия задач)</span><input id="saprod"></label>
+   <label class="f"><span>Шаблон описания</span><select id="satpl"><option value="rework">доработка продукта</option><option value="new">разработка продукта</option></select></label>
+   <label class="f"><span>Эпик</span><input id="saepic" size="14" class="key" placeholder="AMLM-123"></label>
+  </div>
+  <div class="bar-q" style="margin-top:10px">
+   <label class="f grow"><span>Влияние / зачем нужна доработка</span><input id="saimp" placeholder="подставится в шаблон"></label>
+  </div>
+  <div style="margin-top:12px"><b style="font-size:13px">Дополнительные места доработки</b> <span class="mut">— отдельная задача на каждое, например «бандле ДК»</span>
+   <div id="saextra"></div><button id="saaddx" style="margin-top:6px">+ Место доработки</button></div>
+  <div class="row"><button id="saredo">Обновить черновик</button><span class="mut">Правки в карточках ниже при этом сбросятся.</span></div>
+ </div>
+ <div class="card hide" id="saprev">
+  <div class="row" style="margin-top:0"><h3 style="margin:0">Предпросмотр</h3><span id="saprevsum" class="mut"></span></div>
+  <div id="satasks"></div>
+  <div class="confirm"><label><input type="checkbox" id="saconf">Понимаю, что задачи будут созданы в Jira.</label>
+   <button class="sign" id="samk" disabled>Создать задачи</button></div>
+ </div>
+ <div class="card hide" id="sares"></div>
+ <div class="empty"><b>Укажите страницу</b>Программа прочитает разделы СА, источники и примеры и предложит задачи: анализ, реализация в DWH, места доработки и одну задачу на тестирование.</div>
+</section>
+
 <section id="t-jr" class="hide">
  <div class="head"><div><h2>Журнал и откат</h2><p class="lead">Каждая запись в Jira сохраняется в папке <code>jira_toolkit_data</code> рядом с программой. Откат возвращает задачи в состояние до записи.</p></div></div>
  <div class="tw"><table><thead><tr><th>Журнал</th><th>Создан</th><th>Изменений</th><th></th></tr></thead><tbody id="jrbody"><tr><td colspan="4" class="mut">Журналы появятся после подключения</td></tr></tbody></table></div>
@@ -1554,25 +2010,32 @@ function opCell(op,v){const k=OPK[op]||[OPS[op]||op,"+"];
   return `<span class="op">${esc(k[0])}</span>`+(k[1]==="-"?`<del>${esc(v)}</del>`:`<ins>${op==="comment_add"?"":"+ "}${esc(v)}</ins>`);}
 function plural(n,a,b,c){const m=n%10,h=n%100;return m===1&&h!==11?a:(m>=2&&m<=4&&(h<10||h>=20))?b:c;}
 $("op").innerHTML=Object.entries(OPS).map(([k,v])=>`<option value="${k}">${v}</option>`).join("");
-let connected=false;
+let connected=false,jiraBase="";
 let curTab="bulk";
 function showTab(t){curTab=t;
   document.querySelectorAll("nav button").forEach(x=>x.classList.toggle("on",x.dataset.t===t));
-  ["bulk","dg","dash","tree","lk","jr"].forEach(k=>$("t-"+k).classList.toggle("hide",!connected||k!==t));
+  ["bulk","sa","dg","dash","tree","lk","jr"].forEach(k=>$("t-"+k).classList.toggle("hide",!connected||k!==t));
   $("gate").classList.toggle("hide",connected);
   if(t==="jr")loadJournals();}
-function setConn(s){connected=!!s.connected;
+function setConn(s){connected=!!s.connected;jiraBase=String(s.base||"").replace(/\/$/,"");
   $("connbox").classList.toggle("on",connected);
-  $("cstate").textContent=connected?("Подключено"+(s.user?": "+s.user:"")):"Не подключено";
+  $("cljira").classList.toggle("on",connected);
+  $("cstate").textContent=connected?("Jira"+(s.user?": "+s.user:"")):"Jira: не подключено";
   $("cbase").textContent=connected?String(s.base||"").replace(/^https?:\/\//,""):"";
   $("bdisc").classList.toggle("hide",!connected);
   $("connmsg").className="mut";$("connmsg").textContent="";
   showTab(curTab);}
 $("token").addEventListener("keydown",e=>{if(e.key==="Enter")$("bconn").click();});
+$("gctoken").addEventListener("keydown",e=>{if(e.key==="Enter")$("gcconn").click();});
+$("gcconn").onclick=async()=>{$("gcmsg").className="mut";$("gcmsg").textContent="Проверяю...";
+  try{const c=await api("/api/conf/connect",{base:$("gconfbase").value,token:$("gctoken").value,insecure:$("insecure").checked});
+    $("gctoken").value="";setConf(c);
+    try{const st=JSON.parse(localStorage.getItem("jt_sa")||"{}");st.confbase=$("gconfbase").value;localStorage.setItem("jt_sa",JSON.stringify(st));$("confbase").value=$("gconfbase").value;}catch(e){}
+  }catch(e){setConf({cerror:e.message});}};
 $("bconn").onclick=async()=>{$("connmsg").className="mut";$("connmsg").textContent="Проверяю...";
   try{const j=await api("/api/connect",{base:$("base").value,token:$("token").value,insecure:$("insecure").checked});
     $("token").value="";setConn(j);loadJournals();}catch(e){$("connmsg").className="bad";$("connmsg").textContent="Ошибка: "+e.message;}};
-$("bdisc").onclick=async()=>{await api("/api/disconnect",{});setConn({connected:false});};
+$("bdisc").onclick=async()=>{await api("/api/disconnect",{});setConn({connected:false});if(typeof setConf==="function")setConf({});};
 document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>showTab(b.dataset.t));
 $("file").onchange=e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{$("rows").value=r.result;};r.readAsText(f,"utf-8");};
 
@@ -1692,6 +2155,82 @@ document.querySelectorAll(".opts details.help").forEach(d=>d.addEventListener("t
   const pop=d.querySelector(":scope>:not(summary)");if(!pop||!d.open)return;pop.style.left="0";pop.style.right="auto";
   const r=pop.getBoundingClientRect();if(r.right>window.innerWidth-8){pop.style.left="auto";pop.style.right="0";}}));
 document.addEventListener("keydown",e=>{if(e.key==="Escape")document.querySelectorAll(".opts details.help[open]").forEach(d=>d.open=false);});
+/* ---- задачи из анализа ---- */
+let saPage=null,saTasks=[],saInfo=null;
+try{const st=JSON.parse(localStorage.getItem("jt_sa")||"{}");["saprj","satype","confbase"].forEach(k=>{if(st[k])$(k).value=st[k];});if(st.confbase)$("gconfbase").value=st.confbase;}catch(e){}
+function saSave(){try{localStorage.setItem("jt_sa",JSON.stringify({saprj:$("saprj").value,satype:$("satype").value,confbase:$("confbase").value}));}catch(e){}}
+function setConf(s){const on=!!s.cconnected;
+  $("clconf").classList.toggle("on",on);$("clconf").classList.toggle("err",!!s.cerror);
+  $("cfstate").textContent=on?("Confluence"+(s.cuser?": "+s.cuser:"")):s.cerror?"Confluence: токен не принят":"Confluence: не подключено";
+  $("clconf").title=s.cerror||"";
+  $("gcmsg").className=on?"ok":s.cerror?"bad":"mut";$("gcmsg").textContent=on?("Подключено"+(s.cuser?": "+s.cuser:"")):s.cerror?("Ошибка: "+s.cerror):"";
+  $("cfbase").textContent=on?String(s.cbase||"").replace(/^https?:\/\//,""):"";
+  $("cmsg").className=on?"ok":s.cerror?"bad":"mut";$("cmsg").textContent=on?("Confluence подключён"+(s.cuser?": "+s.cuser:"")):s.cerror?("Confluence не подключён: "+s.cerror):"";
+  $("ctoken").closest(".bar-q").classList.toggle("hide",on);}
+api("/api/state").then(setConf).catch(()=>{});
+$("ctoken").addEventListener("keydown",e=>{if(e.key==="Enter")$("cconn").click();});
+$("cconn").onclick=async()=>{$("cmsg").className="mut";$("cmsg").textContent="Проверяю...";
+  try{const j=await api("/api/conf/connect",{base:$("confbase").value,token:$("ctoken").value,insecure:$("insecure").checked});$("ctoken").value="";saSave();setConf(j);}
+  catch(e){$("cmsg").className="bad";$("cmsg").textContent="Ошибка: "+e.message;}};
+function saExtraRow(n,l){const d=document.createElement("div");d.className="bar-q";d.style.marginTop="6px";
+  d.innerHTML=`<label class="f grow"><span>Где доработать</span><input class="xn" value="${esc(n||"")}" placeholder="бандле ДК"></label><label class="f grow"><span>Ссылка на описание (необязательно)</span><input class="xl" value="${esc(l||"")}"></label><button class="tg" title="Убрать" style="align-self:flex-end;font-size:16px">✕</button>`;
+  d.querySelector("button").onclick=()=>d.remove();$("saextra").appendChild(d);}
+$("saaddx").onclick=()=>saExtraRow();
+$("sago").onclick=async()=>{
+  if(!$("saurl").value.trim()){$("samsg").className="bad";$("samsg").textContent="Вставьте ссылку на страницу.";return;}
+  saSave();$("samsg").className="mut";$("samsg").textContent="Читаю страницу и проверяю Jira...";$("sago").disabled=true;
+  ["sainfo","saset","saprev","sares"].forEach(k=>$(k).classList.add("hide"));
+  try{const r=await api("/api/sa/parse",{url:$("saurl").value,project:$("saprj").value,issuetype:$("satype").value});
+    saPage=r.page;saInfo=r.info;$("samsg").textContent="";
+    const i=r.info,ep=i.epic_info;
+    $("sainfo").innerHTML=`<div class="row" style="margin-top:0"><b><a href="${esc(i.url)}" target="_blank" rel="noopener">${esc(i.title)}</a></b><span class="mut">версия ${esc(i.version)}</span></div>
+     <div class="row mut"><span>продукт: <b>${esc(i.product)}</b></span><span>дата запуска: <b>${esc(i.date||"—")}</b></span>
+      <span>источников: <b>${i.sources.length}</b></span><span>пунктов раздела 3: <b>${i.sections.length}</b></span><span>примеров: <b>${i.examples.length}</b></span></div>
+     <div class="row mut">${i.links.map(l=>`<span>${esc(l.label)}: <span class="key">${esc(l.key)}</span></span>`).join("")}</div>
+     ${ep?`<div class="row"><span>Эпик <span class="key">${esc(i.epic)}</span> — ${esc(ep.summary)} <span class="chip c-${ep.done?"done":"indeterminate"}">${esc(ep.status)}</span></span></div>`:""}
+     ${r.warnings.map(w=>`<div class="bad">${esc(w)}</div>`).join("")}
+     ${r.duplicates.length?`<details class="help" open><summary>Похожие задачи уже есть в ${esc($("saprj").value)} (${r.duplicates.length})</summary>${r.duplicates.map(d=>`<div><a class="key" href="#" data-k="${esc(d.key)}" target="_blank" rel="noopener">${esc(d.key)}</a> ${esc(d.summary)} <span class="mut">· ${esc(d.status)} · ${esc(d.created)}</span></div>`).join("")}</details>`:""}`;
+    $("sainfo").querySelectorAll("a[data-k]").forEach(a=>a.href=jiraBase+"/browse/"+a.dataset.k);
+    $("sainfo").classList.remove("hide");
+    $("saprod").value=i.product;$("satpl").value=i.is_update?"rework":"new";
+    $("saepic").value=ep&&ep.done?"":(i.epic||"");
+    $("saextra").innerHTML="";$("saset").classList.remove("hide");
+    await saDraft();
+  }catch(e){$("samsg").className="bad";$("samsg").textContent="Ошибка: "+e.message;}
+  $("sago").disabled=false;};
+async function saDraft(){
+  const extra=[...$("saextra").querySelectorAll(".bar-q")].map(d=>({name:d.querySelector(".xn").value,link:d.querySelector(".xl").value})).filter(x=>x.name.trim());
+  const r=await api("/api/sa/draft",{page:saPage,product:$("saprod").value,template:$("satpl").value,impact:$("saimp").value,noimpact:"",extra:extra});
+  saTasks=r.tasks;saRender();}
+$("saredo").onclick=()=>saDraft().catch(e=>{$("samsg").className="bad";$("samsg").textContent="Ошибка: "+e.message;});
+const SAROLE={analysis:"Анализ",dev:"Разработка",extra:"Доработка",test:"Тестирование"};
+function saRender(){
+  $("satasks").innerHTML=saTasks.map((t,i)=>`<div class="sat" data-i="${i}" style="border:1px solid var(--rule);border-radius:6px;padding:10px 12px;margin-top:10px">
+    <div class="bar-q"><label style="align-self:center"><input type="checkbox" class="on" checked></label>
+     <span class="chip c-new" style="align-self:center">${SAROLE[t.role]||t.role}</span>
+     <label class="f grow"><span>Название</span><input class="sm" value="${esc(t.summary)}"></label>
+     <label class="f"><span>Исполнитель (логин)</span><input class="as" size="12" placeholder="U_XXXXX"></label></div>
+    <details style="margin-top:8px"><summary>Описание${t.todo?` · <span class="od">не заполнено полей: ${t.todo}</span>`:""}</summary>
+     <textarea class="ds" rows="12" style="margin-top:6px;font-size:12px">${esc(t.description)}</textarea></details></div>`).join("");
+  $("satasks").querySelectorAll(".on").forEach(c=>c.onchange=saCount);
+  $("saprev").classList.remove("hide");$("saconf").checked=false;saCount();}
+function saCollect(){return [...$("satasks").querySelectorAll(".sat")].filter(d=>d.querySelector(".on").checked).map(d=>({summary:d.querySelector(".sm").value,assignee:d.querySelector(".as").value,description:d.querySelector(".ds").value}));}
+function saCount(){const n=saCollect().length,todo=saCollect().reduce((a,t)=>a+(t.description.match(/⚠ заполнить/g)||[]).length,0);
+  $("saprevsum").textContent=`к созданию: ${n} ${plural(n,"задача","задачи","задач")} в ${$("saprj").value}`+($("saepic").value?`, эпик ${$("saepic").value}`:", без эпика")+(todo?` · не заполнено полей шаблона: ${todo}`:"");
+  $("samk").textContent=`Создать ${n} ${plural(n,"задачу","задачи","задач")}`;$("samk").disabled=!n||!$("saconf").checked;}
+$("saconf").onchange=saCount;$("saepic").oninput=saCount;
+$("samk").onclick=async()=>{
+  const tasks=saCollect(),todo=tasks.reduce((a,t)=>a+(t.description.match(/⚠ заполнить/g)||[]).length,0);
+  if(todo&&!confirm(`В описаниях осталось незаполненных полей шаблона: ${todo}. Всё равно создать?`))return;
+  if(!confirm(`Создать в ${$("saprj").value} задач: ${tasks.length}?`))return;
+  $("samk").disabled=true;$("sares").classList.remove("hide");$("sares").innerHTML=`<span class="mut">Создаю задачи...</span>`;
+  try{const r=await api("/api/sa/create",{page:saPage,project:$("saprj").value,issuetype:$("satype").value,epic:$("saepic").value,tasks:tasks});
+    $("sares").innerHTML=`<div class="row" style="margin-top:0"><h3 style="margin:0">Создано: ${r.created} из ${tasks.length}</h3><span class="mut">журнал: ${esc(r.journal)}</span></div>
+     <div class="tw"><table><thead><tr><th>Задача</th><th>Название</th><th>Замечание</th></tr></thead><tbody>${r.results.map(x=>`<tr><td>${x.key?`<a class="key" href="${esc(r.base)}/browse/${esc(x.key)}" target="_blank" rel="noopener">${esc(x.key)}</a>`:`<span class="bad">ошибка</span>`}</td><td>${esc(x.summary)}</td><td class="${x.error?"bad":"mut"}">${esc(x.error||x.note||"")}</td></tr>`).join("")}</tbody></table></div>`;
+    $("saconf").checked=false;
+  }catch(e){$("sares").innerHTML=`<span class="bad">Ошибка: ${esc(e.message)}</span>`;}
+  saCount();};
+
 /* ---- структура эпика ---- */
 let treeData=null,collapsed=new Set(),treeJob=null,excl=new Set(),exclRoot="";
 const fmtD=s=>s?s.split("-").reverse().join("."):"—";

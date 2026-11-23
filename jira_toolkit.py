@@ -1282,6 +1282,11 @@ section>.head{display:flex;align-items:flex-end;justify-content:space-between;ga
 .opts{display:flex;flex-wrap:wrap;gap:8px 20px;align-items:center;margin-top:12px;padding-top:12px;border-top:1px dashed var(--rule)}
 .help{margin-top:12px;font-size:13px;color:var(--graphite-2);max-width:90ch}
 .help p{margin:0 0 6px}
+/* подсказки в строке параметров: всплывают поверх, а не раздвигают строку */
+.opts details.help{position:relative}
+.opts details.help[open]>summary{margin-bottom:0}
+.opts details.help>:not(summary){position:absolute;top:calc(100% + 6px);left:0;z-index:30;width:min(440px,80vw);margin:0;padding:10px 12px;
+ background:var(--sheet);border:1px solid var(--rule-3);border-radius:6px;box-shadow:0 6px 20px rgba(0,0,0,.12);color:var(--graphite-2);line-height:1.45}
 .row{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;margin:8px 0}
 .mut{color:var(--pencil)}.ok{color:var(--stamp)}.bad{color:var(--redpen)}
 .warn{color:#8A5A00;background:var(--marker-tint);padding:0 4px;border-radius:3px;font-weight:600;font-size:var(--t12)}
@@ -1681,6 +1686,12 @@ $("drun").onclick=async()=>{
         <div class="n">${r.error?"—":r.total}</div><div class="th">${th}</div></a>`;}).join("");
     $("dmsg").textContent="Обновлено "+new Date().toLocaleTimeString();
   }catch(e){$("dmsg").textContent="Ошибка: "+e.message;}};
+/* всплывающие подсказки: одна открыта, закрываются кликом мимо и Esc */
+document.addEventListener("click",e=>{document.querySelectorAll(".opts details.help[open]").forEach(d=>{if(!d.contains(e.target))d.open=false;});});
+document.querySelectorAll(".opts details.help").forEach(d=>d.addEventListener("toggle",()=>{
+  const pop=d.querySelector(":scope>:not(summary)");if(!pop||!d.open)return;pop.style.left="0";pop.style.right="auto";
+  const r=pop.getBoundingClientRect();if(r.right>window.innerWidth-8){pop.style.left="auto";pop.style.right="0";}}));
+document.addEventListener("keydown",e=>{if(e.key==="Escape")document.querySelectorAll(".opts details.help[open]").forEach(d=>d.open=false);});
 /* ---- структура эпика ---- */
 let treeData=null,collapsed=new Set(),treeJob=null,excl=new Set(),exclRoot="";
 const fmtD=s=>s?s.split("-").reverse().join("."):"—";

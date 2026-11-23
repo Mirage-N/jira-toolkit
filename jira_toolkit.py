@@ -947,6 +947,10 @@ def sa_parse_storage(title, storage):
                 in_src = "источник" in name.lower()
                 continue
             if tag.startswith("h"): in_src = "источник" in t.lower()
+        if in_src and tag != "table":           # источники абзацами: «Модуль переходов CIDS_MLM_PII.LINKS_STORE__TRANSITION»
+            for f in TABLE_RE_SA.findall(t):
+                sch, _, tb = f.partition(".")
+                if len(sch) >= 3 and len(tb) >= 4 and f not in info["sources"]: info["sources"].append(f)   # отсекаем DD.MM и т.п.
         if in_src and tag == "table":
             rows = b["table"]
             for r in rows[1:] if rows and "источник" in (rows[0][0] if rows[0] else "").lower() else rows:
@@ -967,6 +971,10 @@ def sa_epic_from_links(links, project):
         if "эпик" in l["label"].lower() and l["key"].startswith(project + "-"): return l["key"]
     return ""
 
+def wiki_esc(s):
+    """Текст со страницы -> безопасный для wiki-разметки Jira: {N} иначе ломает списки, | ломает таблицы."""
+    return str(s or "").replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}").replace("[", "\\[").replace("]", "\\]")
+
 def wiki_cell(s):
     return str(s or "").replace("|", "/").strip() or " "
 
@@ -982,10 +990,10 @@ def sa_drafts(info, opts):
     kind = opts.get("template") or ("rework" if info.get("is_update") else "new")
     date = info.get("date", "")
     secs = [s for s in info["sections"] if s["num"] != "3" and "источник" not in s["name"].lower()]
-    sec_lines = "\n".join(f" - {s['num']}. {s['name']}" for s in secs) or " - см. раздел 3 страницы"
-    src_lines = "\n".join(f" - {s}" for s in info["sources"]) or " - см. раздел 3.1 страницы"
-    sa_lines = "\n".join(f" - {s}" for s in info["sa_sections"])
-    intro = info.get("intro", "")
+    sec_lines = "\n".join(f" - {s['num']}. {wiki_esc(s['name'])}" for s in secs) or " - см. раздел 3 страницы"
+    src_lines = "\n".join(f" - {wiki_esc(s)}" for s in info["sources"]) or " - см. раздел 3.1 страницы"
+    sa_lines = "\n".join(f" - {wiki_esc(s)}" for s in info["sa_sections"])
+    intro = wiki_esc(info.get("intro", ""))
     observe = f"с {date} - дата запуска" if date else TODO
     out = []
     # 1. анализ
@@ -1026,7 +1034,7 @@ def sa_drafts(info, opts):
                 ("Период наблюдения за процессом", observe), ("Требуется ли тестирование бизнес-логики доработки", "да")]
         out.append({"role": "extra", "summary": f"{P}: учёт в {nm}", "description": wiki_table(rows)})
     # 3. тестирование (одна задача)
-    ex = "\n".join(f" - {e}" for e in info["examples"]) or " - по примерам сценариев со страницы"
+    ex = "\n".join(f" - {wiki_esc(e)}" for e in info["examples"]) or " - по примерам сценариев со страницы"
     places = ", ".join([P] + [" ".join(str(x.get("name") or "").split()) for x in opts.get("extra") or [] if x.get("name")])
     desc = (f"Подготовить тест-кейсы и протестировать: {places}.\n\nСценарии со страницы СА:\n{ex}\n\n"
             + (f"Описание: [{url}]" if url else ""))
@@ -1111,7 +1119,6 @@ def sa_create(body):
     project = str(body.get("project") or "").strip().upper()
     if not _re_sa.match(r"^[A-Z][A-Z0-9_]*$", project): raise JiraError(400, "Некорректный ключ проекта")
     itype = str(body.get("issuetype") or "Задача").strip()
-    labels = [l for l in (str(body.get("labels") or "").replace(",", " ").split()) if l][:10]
     epic = str(body.get("epic") or "").strip().upper()
     if epic and not KEY_RE_SA.fullmatch(epic): raise JiraError(400, "Некорректный ключ эпика")
     tasks = [t for t in (body.get("tasks") or []) if isinstance(t, dict)][:30]
@@ -1122,7 +1129,6 @@ def sa_create(body):
         summary = " ".join(str(t.get("summary") or "").split())[:250]
         if not summary: res.append({"summary": "", "error": "пустое название"}); continue
         f = {"project": {"key": project}, "issuetype": {"name": itype}, "summary": summary, "description": str(t.get("description") or "")[:30000]}
-        if labels: f["labels"] = labels
         a = str(t.get("assignee") or "").strip()
         if a: f["assignee"] = {"name": a}
         if efield: f[efield] = epic
@@ -1967,7 +1973,6 @@ pre{font-family:var(--mono)}
    <label class="f"><span>Эпик</span><input id="saepic" size="14" class="key" placeholder="AMLM-123"></label>
   </div>
   <div class="bar-q" style="margin-top:10px">
-   <label class="f"><span>Метки (через пробел)</span><input id="salab" size="16"></label>
    <label class="f grow"><span>Влияние / зачем нужна доработка</span><input id="saimp" placeholder="подставится в шаблон"></label>
   </div>
   <div style="margin-top:12px"><b style="font-size:13px">Дополнительные места доработки</b> <span class="mut">— отдельная задача на каждое, например «бандле ДК»</span>
@@ -2191,7 +2196,6 @@ $("sago").onclick=async()=>{
     $("sainfo").classList.remove("hide");
     $("saprod").value=i.product;$("satpl").value=i.is_update?"rework":"new";
     $("saepic").value=ep&&ep.done?"":(i.epic||"");
-    $("salab").value=(i.product.split(/[\s(]+/)[0]||"").toLowerCase();
     $("saextra").innerHTML="";$("saset").classList.remove("hide");
     await saDraft();
   }catch(e){$("samsg").className="bad";$("samsg").textContent="Ошибка: "+e.message;}
@@ -2222,7 +2226,7 @@ $("samk").onclick=async()=>{
   if(todo&&!confirm(`В описаниях осталось незаполненных полей шаблона: ${todo}. Всё равно создать?`))return;
   if(!confirm(`Создать в ${$("saprj").value} задач: ${tasks.length}?`))return;
   $("samk").disabled=true;$("sares").classList.remove("hide");$("sares").innerHTML=`<span class="mut">Создаю задачи...</span>`;
-  try{const r=await api("/api/sa/create",{page:saPage,project:$("saprj").value,issuetype:$("satype").value,labels:$("salab").value,epic:$("saepic").value,tasks:tasks});
+  try{const r=await api("/api/sa/create",{page:saPage,project:$("saprj").value,issuetype:$("satype").value,epic:$("saepic").value,tasks:tasks});
     $("sares").innerHTML=`<div class="row" style="margin-top:0"><h3 style="margin:0">Создано: ${r.created} из ${tasks.length}</h3><span class="mut">журнал: ${esc(r.journal)}</span></div>
      <div class="tw"><table><thead><tr><th>Задача</th><th>Название</th><th>Замечание</th></tr></thead><tbody>${r.results.map(x=>`<tr><td>${x.key?`<a class="key" href="${esc(r.base)}/browse/${esc(x.key)}" target="_blank" rel="noopener">${esc(x.key)}</a>`:`<span class="bad">ошибка</span>`}</td><td>${esc(x.summary)}</td><td class="${x.error?"bad":"mut"}">${esc(x.error||x.note||"")}</td></tr>`).join("")}</tbody></table></div>`;
     $("saconf").checked=false;

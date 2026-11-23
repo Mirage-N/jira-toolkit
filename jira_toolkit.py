@@ -1743,10 +1743,7 @@ del{text-decoration:line-through;text-decoration-color:var(--redpen);text-decora
 
 #gate{max-width:560px;margin:8vh auto 0}
 #gate .card{padding:24px}
-#gate details.card{margin-top:16px;padding:16px 24px}
-#gate details.card>summary{font-size:var(--t14);color:var(--graphite)}
-#gate details.card>summary::before{content:"+"}
-#gate details.card[open]>summary::before{content:"−"}
+#gate #gconf{margin-top:16px}
 #gate .f input{width:100%}
 #gate .stack{display:flex;flex-direction:column;gap:12px;margin-top:16px}
 #connmsg{font-size:13px}
@@ -1800,15 +1797,16 @@ pre{font-family:var(--mono)}
   </div>
   <div class="lock">Токен хранится только в памяти программы и уходит только в вашу Jira. Программа доступна только с этого компьютера.</div>
  </div>
- <details class="card" id="gconf">
-  <summary><b>Confluence</b> <span class="mut">— необязательно, нужен только для раздела «Задачи из анализа»</span></summary>
+ <div class="card" id="gconf">
+  <h2>Подключение к Confluence <span class="mut" style="font-size:var(--t14);font-weight:400">— необязательно</span></h2>
+  <p class="lead">Нужен только для раздела «Задачи из анализа». Нужен адрес Confluence и ваш Personal Access Token (Confluence → аватар → Настройки → Personal Access Tokens). Токен Jira сюда не подходит. Подключить можно и позже — в самом разделе.</p>
   <div class="stack">
-   <p class="mut" style="margin:0">Свой токен Confluence: аватар → «Настройки» → «Personal Access Tokens». Подключить можно и позже — в самом разделе.</p>
    <label class="f"><span>Адрес Confluence</span><input id="gconfbase" placeholder="https://confluence.company.ru" value="https://confluence.moscow.alfaintra.net"></label>
-   <label class="f"><span>Personal Access Token Confluence</span><input id="gctoken" type="password" placeholder="токен из Confluence (не из Jira)" autocomplete="new-password"></label>
-   <div class="row"><button id="gcconn">Подключить Confluence</button><span id="gcmsg" class="mut"></span></div>
+   <label class="f"><span>Personal Access Token Confluence</span><input id="gctoken" type="password" placeholder="вставьте токен" autocomplete="new-password"></label>
+   <div class="row"><button class="p" id="gcconn">Подключиться к Confluence</button><span id="gcmsg" class="mut"></span></div>
   </div>
- </details>
+  <div class="lock">Токен хранится только в памяти программы и уходит только в ваш Confluence.</div>
+ </div>
 </div>
 
 <section id="t-bulk">
@@ -1950,7 +1948,7 @@ pre{font-family:var(--mono)}
   <div class="bar-q">
    <label class="f grow"><span>Адрес Confluence</span><input id="confbase" value="https://confluence.moscow.alfaintra.net"></label>
    <label class="f grow"><span>Personal Access Token Confluence</span><input id="ctoken" type="password" placeholder="токен из Confluence, не из Jira" autocomplete="new-password"></label>
-   <button class="p" id="cconn">Подключить Confluence</button>
+   <button class="p" id="cconn">Подключиться к Confluence</button>
   </div>
   <div id="cmsg" class="mut" style="margin-top:8px"></div>
   <details class="help"><summary>Где взять токен</summary><p>Confluence → аватар → «Настройки» → «Personal Access Tokens» → «Create token». Токен Jira к Confluence не подходит. Токен хранится только в памяти программы.</p></details>

@@ -1111,7 +1111,6 @@ def sa_create(body):
     project = str(body.get("project") or "").strip().upper()
     if not _re_sa.match(r"^[A-Z][A-Z0-9_]*$", project): raise JiraError(400, "Некорректный ключ проекта")
     itype = str(body.get("issuetype") or "Задача").strip()
-    comp = str(body.get("component") or "").strip()
     labels = [l for l in (str(body.get("labels") or "").replace(",", " ").split()) if l][:10]
     epic = str(body.get("epic") or "").strip().upper()
     if epic and not KEY_RE_SA.fullmatch(epic): raise JiraError(400, "Некорректный ключ эпика")
@@ -1123,7 +1122,6 @@ def sa_create(body):
         summary = " ".join(str(t.get("summary") or "").split())[:250]
         if not summary: res.append({"summary": "", "error": "пустое название"}); continue
         f = {"project": {"key": project}, "issuetype": {"name": itype}, "summary": summary, "description": str(t.get("description") or "")[:30000]}
-        if comp: f["components"] = [{"name": comp}]
         if labels: f["labels"] = labels
         a = str(t.get("assignee") or "").strip()
         if a: f["assignee"] = {"name": a}
@@ -1959,7 +1957,6 @@ pre{font-family:var(--mono)}
    <label class="f"><span>Эпик</span><input id="saepic" size="14" class="key" placeholder="AMLM-123"></label>
   </div>
   <div class="bar-q" style="margin-top:10px">
-   <label class="f grow"><span>Компонент</span><input id="sacomp" value="Свой в Альфе (целевое)"></label>
    <label class="f"><span>Метки (через пробел)</span><input id="salab" size="16"></label>
    <label class="f grow"><span>Влияние / зачем нужна доработка</span><input id="saimp" placeholder="подставится в шаблон"></label>
   </div>
@@ -2149,8 +2146,8 @@ document.querySelectorAll(".opts details.help").forEach(d=>d.addEventListener("t
 document.addEventListener("keydown",e=>{if(e.key==="Escape")document.querySelectorAll(".opts details.help[open]").forEach(d=>d.open=false);});
 /* ---- задачи из анализа ---- */
 let saPage=null,saTasks=[],saInfo=null;
-try{const st=JSON.parse(localStorage.getItem("jt_sa")||"{}");["saprj","satype","sacomp","confbase"].forEach(k=>{if(st[k])$(k).value=st[k];});if(st.confbase)$("gconfbase").value=st.confbase;}catch(e){}
-function saSave(){try{localStorage.setItem("jt_sa",JSON.stringify({saprj:$("saprj").value,satype:$("satype").value,sacomp:$("sacomp").value,confbase:$("confbase").value}));}catch(e){}}
+try{const st=JSON.parse(localStorage.getItem("jt_sa")||"{}");["saprj","satype","confbase"].forEach(k=>{if(st[k])$(k).value=st[k];});if(st.confbase)$("gconfbase").value=st.confbase;}catch(e){}
+function saSave(){try{localStorage.setItem("jt_sa",JSON.stringify({saprj:$("saprj").value,satype:$("satype").value,confbase:$("confbase").value}));}catch(e){}}
 function setConf(s){const on=!!s.cconnected;
   $("clconf").classList.toggle("on",on);$("clconf").classList.toggle("err",!!s.cerror);
   $("cfstate").textContent=on?("Confluence"+(s.cuser?": "+s.cuser:"")):s.cerror?"Confluence: токен не принят":"Confluence: не подключено";
@@ -2216,7 +2213,7 @@ $("samk").onclick=async()=>{
   if(todo&&!confirm(`В описаниях осталось незаполненных полей шаблона: ${todo}. Всё равно создать?`))return;
   if(!confirm(`Создать в ${$("saprj").value} задач: ${tasks.length}?`))return;
   $("samk").disabled=true;$("sares").classList.remove("hide");$("sares").innerHTML=`<span class="mut">Создаю задачи...</span>`;
-  try{const r=await api("/api/sa/create",{page:saPage,project:$("saprj").value,issuetype:$("satype").value,component:$("sacomp").value,labels:$("salab").value,epic:$("saepic").value,tasks:tasks});
+  try{const r=await api("/api/sa/create",{page:saPage,project:$("saprj").value,issuetype:$("satype").value,labels:$("salab").value,epic:$("saepic").value,tasks:tasks});
     $("sares").innerHTML=`<div class="row" style="margin-top:0"><h3 style="margin:0">Создано: ${r.created} из ${tasks.length}</h3><span class="mut">журнал: ${esc(r.journal)}</span></div>
      <div class="tw"><table><thead><tr><th>Задача</th><th>Название</th><th>Замечание</th></tr></thead><tbody>${r.results.map(x=>`<tr><td>${x.key?`<a class="key" href="${esc(r.base)}/browse/${esc(x.key)}" target="_blank" rel="noopener">${esc(x.key)}</a>`:`<span class="bad">ошибка</span>`}</td><td>${esc(x.summary)}</td><td class="${x.error?"bad":"mut"}">${esc(x.error||x.note||"")}</td></tr>`).join("")}</tbody></table></div>`;
     $("saconf").checked=false;

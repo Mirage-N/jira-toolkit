@@ -1506,7 +1506,7 @@ class Handler(BaseHTTPRequestHandler):
                 ct = str(body.get("token", "")).strip().strip('"').strip("'").strip()
                 if not cb.startswith("http"): return self._json({"error": "укажите адрес Confluence"}, 400)
                 if not ct or any(ch.isspace() for ch in ct): return self._json({"error": "токен пустой или содержит пробелы"}, 400)
-                STATE.update(cbase=cb, ctoken=ct, cuser="")
+                STATE.update(cbase=cb, ctoken=ct, cuser="", insecure=bool(body.get("insecure", STATE["insecure"])))
                 try: me = conf("GET", "/rest/api/user/current", tries=2)
                 except JiraError as e:
                     STATE.update(ctoken="")
@@ -1737,6 +1737,10 @@ del{text-decoration:line-through;text-decoration-color:var(--redpen);text-decora
 
 #gate{max-width:560px;margin:8vh auto 0}
 #gate .card{padding:24px}
+#gate details.card{margin-top:16px;padding:16px 24px}
+#gate details.card>summary{font-size:var(--t14);color:var(--graphite)}
+#gate details.card>summary::before{content:"+"}
+#gate details.card[open]>summary::before{content:"−"}
 #gate .f input{width:100%}
 #gate .stack{display:flex;flex-direction:column;gap:12px;margin-top:16px}
 #connmsg{font-size:13px}
@@ -1780,19 +1784,25 @@ pre{font-family:var(--mono)}
 
 <div id="gate">
  <div class="card">
-  <h2>Подключение к Jira и Confluence</h2>
-  <p class="lead">Нужен адрес Jira и ваш Personal Access Token (Jira → профиль → Personal Access Tokens). Для Confluence — свой токен (Confluence → аватар → Настройки → Personal Access Tokens).</p>
+  <h2>Подключение к Jira</h2>
+  <p class="lead">Нужен адрес Jira и ваш Personal Access Token (Jira → профиль → Personal Access Tokens). Этого достаточно для всех разделов, кроме «Задачи из анализа».</p>
   <div class="stack">
    <label class="f"><span>Адрес Jira</span><input id="base" placeholder="https://jira.company.ru" value="https://jira.moscow.alfaintra.net"></label>
-   <label class="f"><span>Personal Access Token</span><input id="token" type="password" placeholder="вставьте токен" autocomplete="off"></label>
-   <div class="gsep">Confluence — нужен для раздела «Задачи из анализа». Можно не заполнять и подключить позже.</div>
-   <label class="f"><span>Адрес Confluence</span><input id="gconfbase" placeholder="https://confluence.company.ru" value="https://confluence.moscow.alfaintra.net"></label>
-   <label class="f"><span>Personal Access Token Confluence</span><input id="gctoken" type="password" placeholder="токен из Confluence (не из Jira)" autocomplete="off"></label>
+   <label class="f"><span>Personal Access Token Jira</span><input id="token" type="password" placeholder="вставьте токен" autocomplete="new-password"></label>
    <label><input id="insecure" type="checkbox" checked>Не проверять SSL-сертификат</label>
-   <div class="row"><button class="p" id="bconn">Подключиться</button><span id="connmsg" class="mut"></span></div>
+   <div class="row"><button class="p" id="bconn">Подключиться к Jira</button><span id="connmsg" class="mut"></span></div>
   </div>
-  <div class="lock">Токены хранятся только в памяти программы: токен Jira уходит только в вашу Jira, токен Confluence — только в ваш Confluence. Программа доступна только с этого компьютера.</div>
+  <div class="lock">Токен хранится только в памяти программы и уходит только в вашу Jira. Программа доступна только с этого компьютера.</div>
  </div>
+ <details class="card" id="gconf">
+  <summary><b>Confluence</b> <span class="mut">— необязательно, нужен только для раздела «Задачи из анализа»</span></summary>
+  <div class="stack">
+   <p class="mut" style="margin:0">Свой токен Confluence: аватар → «Настройки» → «Personal Access Tokens». Подключить можно и позже — в самом разделе.</p>
+   <label class="f"><span>Адрес Confluence</span><input id="gconfbase" placeholder="https://confluence.company.ru" value="https://confluence.moscow.alfaintra.net"></label>
+   <label class="f"><span>Personal Access Token Confluence</span><input id="gctoken" type="password" placeholder="токен из Confluence (не из Jira)" autocomplete="new-password"></label>
+   <div class="row"><button id="gcconn">Подключить Confluence</button><span id="gcmsg" class="mut"></span></div>
+  </div>
+ </details>
 </div>
 
 <section id="t-bulk">
@@ -1933,7 +1943,7 @@ pre{font-family:var(--mono)}
  <div class="card" id="sacon">
   <div class="bar-q">
    <label class="f grow"><span>Адрес Confluence</span><input id="confbase" value="https://confluence.moscow.alfaintra.net"></label>
-   <label class="f grow"><span>Personal Access Token Confluence</span><input id="ctoken" type="password" placeholder="токен из Confluence, не из Jira" autocomplete="off"></label>
+   <label class="f grow"><span>Personal Access Token Confluence</span><input id="ctoken" type="password" placeholder="токен из Confluence, не из Jira" autocomplete="new-password"></label>
    <button class="p" id="cconn">Подключить Confluence</button>
   </div>
   <div id="cmsg" class="mut" style="margin-top:8px"></div>
@@ -2013,17 +2023,15 @@ function setConn(s){connected=!!s.connected;jiraBase=String(s.base||"").replace(
   $("connmsg").className="mut";$("connmsg").textContent="";
   showTab(curTab);}
 $("token").addEventListener("keydown",e=>{if(e.key==="Enter")$("bconn").click();});
-$("gctoken").addEventListener("keydown",e=>{if(e.key==="Enter")$("bconn").click();});
+$("gctoken").addEventListener("keydown",e=>{if(e.key==="Enter")$("gcconn").click();});
+$("gcconn").onclick=async()=>{$("gcmsg").className="mut";$("gcmsg").textContent="Проверяю...";
+  try{const c=await api("/api/conf/connect",{base:$("gconfbase").value,token:$("gctoken").value,insecure:$("insecure").checked});
+    $("gctoken").value="";setConf(c);
+    try{const st=JSON.parse(localStorage.getItem("jt_sa")||"{}");st.confbase=$("gconfbase").value;localStorage.setItem("jt_sa",JSON.stringify(st));$("confbase").value=$("gconfbase").value;}catch(e){}
+  }catch(e){setConf({cerror:e.message});}};
 $("bconn").onclick=async()=>{$("connmsg").className="mut";$("connmsg").textContent="Проверяю...";
   try{const j=await api("/api/connect",{base:$("base").value,token:$("token").value,insecure:$("insecure").checked});
-    $("token").value="";
-    const ct=$("gctoken").value.trim();
-    if(ct){$("connmsg").textContent="Jira подключена, проверяю Confluence...";
-      try{const c=await api("/api/conf/connect",{base:$("gconfbase").value,token:ct});setConf(c);}
-      catch(e){setConf({cerror:e.message});}
-      $("gctoken").value="";}
-    try{const st=JSON.parse(localStorage.getItem("jt_sa")||"{}");st.confbase=$("gconfbase").value;localStorage.setItem("jt_sa",JSON.stringify(st));$("confbase").value=$("gconfbase").value;}catch(e){}
-    setConn(j);loadJournals();}catch(e){$("connmsg").className="bad";$("connmsg").textContent="Ошибка: "+e.message;}};
+    $("token").value="";setConn(j);loadJournals();}catch(e){$("connmsg").className="bad";$("connmsg").textContent="Ошибка: "+e.message;}};
 $("bdisc").onclick=async()=>{await api("/api/disconnect",{});setConn({connected:false});if(typeof setConf==="function")setConf({});};
 document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>showTab(b.dataset.t));
 $("file").onchange=e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{$("rows").value=r.result;};r.readAsText(f,"utf-8");};
@@ -2152,13 +2160,14 @@ function setConf(s){const on=!!s.cconnected;
   $("clconf").classList.toggle("on",on);$("clconf").classList.toggle("err",!!s.cerror);
   $("cfstate").textContent=on?("Confluence"+(s.cuser?": "+s.cuser:"")):s.cerror?"Confluence: токен не принят":"Confluence: не подключено";
   $("clconf").title=s.cerror||"";
+  $("gcmsg").className=on?"ok":s.cerror?"bad":"mut";$("gcmsg").textContent=on?("Подключено"+(s.cuser?": "+s.cuser:"")):s.cerror?("Ошибка: "+s.cerror):"";
   $("cfbase").textContent=on?String(s.cbase||"").replace(/^https?:\/\//,""):"";
   $("cmsg").className=on?"ok":s.cerror?"bad":"mut";$("cmsg").textContent=on?("Confluence подключён"+(s.cuser?": "+s.cuser:"")):s.cerror?("Confluence не подключён: "+s.cerror):"";
   $("ctoken").closest(".bar-q").classList.toggle("hide",on);}
 api("/api/state").then(setConf).catch(()=>{});
 $("ctoken").addEventListener("keydown",e=>{if(e.key==="Enter")$("cconn").click();});
 $("cconn").onclick=async()=>{$("cmsg").className="mut";$("cmsg").textContent="Проверяю...";
-  try{const j=await api("/api/conf/connect",{base:$("confbase").value,token:$("ctoken").value});$("ctoken").value="";saSave();setConf(j);}
+  try{const j=await api("/api/conf/connect",{base:$("confbase").value,token:$("ctoken").value,insecure:$("insecure").checked});$("ctoken").value="";saSave();setConf(j);}
   catch(e){$("cmsg").className="bad";$("cmsg").textContent="Ошибка: "+e.message;}};
 function saExtraRow(n,l){const d=document.createElement("div");d.className="bar-q";d.style.marginTop="6px";
   d.innerHTML=`<label class="f grow"><span>Где доработать</span><input class="xn" value="${esc(n||"")}" placeholder="бандле ДК"></label><label class="f grow"><span>Ссылка на описание (необязательно)</span><input class="xl" value="${esc(l||"")}"></label><button class="tg" title="Убрать" style="align-self:flex-end;font-size:16px">✕</button>`;

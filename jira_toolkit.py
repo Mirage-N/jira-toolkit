@@ -1653,8 +1653,11 @@ nav button:hover{background:rgba(36,35,31,.05);color:var(--graphite)}
 nav button.on{background:rgba(36,35,31,.08);color:var(--graphite);font-weight:600}
 .conn{margin-top:auto;padding:12px 8px 0;border-top:1px solid var(--rule);font-size:var(--t12);color:var(--graphite-2);display:flex;flex-direction:column;gap:8px}
 .conn .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--faint);margin-right:6px;vertical-align:1px}
-.conn.on .dot{background:var(--stamp)}
-.conn #cbase{font-family:var(--mono);font-size:11px;color:var(--pencil);word-break:break-all}
+.conn .cl.on .dot{background:var(--stamp)}
+.conn .cl.err .dot{background:var(--redpen)}
+.conn .cl.err{color:var(--redpen)}
+.conn #cbase,.conn #cfbase{font-family:var(--mono);font-size:11px;color:var(--pencil);word-break:break-all;margin-top:-6px}
+.gsep{margin:6px 0 0;padding-top:14px;border-top:1px dashed var(--rule);font-size:var(--t12);color:var(--pencil)}
 .conn button{align-self:flex-start;min-height:28px;padding:3px 10px;font-size:var(--t12)}
 
 main{padding:28px 36px 64px;width:100%;border-left:1px solid var(--rule);min-width:0}
@@ -1770,21 +1773,27 @@ pre{font-family:var(--mono)}
   <button data-t="dg" class="w" title="Пишет в Jira">Доски в Jira</button>
   <button data-t="jr" class="w" title="Пишет в Jira">Журнал и откат</button>
  </nav>
- <div class="conn" id="connbox"><div><span class="dot"></span><span id="cstate">Не подключено</span></div><div id="cbase"></div><button id="bdisc" class="hide">Отключиться</button></div>
+ <div class="conn" id="connbox">
+  <div class="cl" id="cljira"><span class="dot"></span><span id="cstate">Jira: не подключено</span></div><div id="cbase"></div>
+  <div class="cl" id="clconf"><span class="dot"></span><span id="cfstate">Confluence: не подключено</span></div><div id="cfbase"></div>
+  <button id="bdisc" class="hide">Отключиться</button></div>
 </aside>
 <main>
 
 <div id="gate">
  <div class="card">
-  <h2>Подключение к Jira</h2>
-  <p class="lead">Нужен адрес Jira и ваш Personal Access Token (Jira → профиль → Personal Access Tokens).</p>
+  <h2>Подключение к Jira и Confluence</h2>
+  <p class="lead">Нужен адрес Jira и ваш Personal Access Token (Jira → профиль → Personal Access Tokens). Для Confluence — свой токен (Confluence → аватар → Настройки → Personal Access Tokens).</p>
   <div class="stack">
    <label class="f"><span>Адрес Jira</span><input id="base" placeholder="https://jira.company.ru" value="https://jira.moscow.alfaintra.net"></label>
    <label class="f"><span>Personal Access Token</span><input id="token" type="password" placeholder="вставьте токен" autocomplete="off"></label>
+   <div class="gsep">Confluence — нужен для раздела «Задачи из анализа». Можно не заполнять и подключить позже.</div>
+   <label class="f"><span>Адрес Confluence</span><input id="gconfbase" placeholder="https://confluence.company.ru" value="https://confluence.moscow.alfaintra.net"></label>
+   <label class="f"><span>Personal Access Token Confluence</span><input id="gctoken" type="password" placeholder="токен из Confluence (не из Jira)" autocomplete="off"></label>
    <label><input id="insecure" type="checkbox" checked>Не проверять SSL-сертификат</label>
    <div class="row"><button class="p" id="bconn">Подключиться</button><span id="connmsg" class="mut"></span></div>
   </div>
-  <div class="lock">Токен хранится только в памяти программы и уходит только в вашу Jira. Программа доступна только с этого компьютера.</div>
+  <div class="lock">Токены хранятся только в памяти программы: токен Jira уходит только в вашу Jira, токен Confluence — только в ваш Confluence. Программа доступна только с этого компьютера.</div>
  </div>
 </div>
 
@@ -2000,15 +2009,24 @@ function showTab(t){curTab=t;
   if(t==="jr")loadJournals();}
 function setConn(s){connected=!!s.connected;jiraBase=String(s.base||"").replace(/\/$/,"");
   $("connbox").classList.toggle("on",connected);
-  $("cstate").textContent=connected?("Подключено"+(s.user?": "+s.user:"")):"Не подключено";
+  $("cljira").classList.toggle("on",connected);
+  $("cstate").textContent=connected?("Jira"+(s.user?": "+s.user:"")):"Jira: не подключено";
   $("cbase").textContent=connected?String(s.base||"").replace(/^https?:\/\//,""):"";
   $("bdisc").classList.toggle("hide",!connected);
   $("connmsg").className="mut";$("connmsg").textContent="";
   showTab(curTab);}
 $("token").addEventListener("keydown",e=>{if(e.key==="Enter")$("bconn").click();});
+$("gctoken").addEventListener("keydown",e=>{if(e.key==="Enter")$("bconn").click();});
 $("bconn").onclick=async()=>{$("connmsg").className="mut";$("connmsg").textContent="Проверяю...";
   try{const j=await api("/api/connect",{base:$("base").value,token:$("token").value,insecure:$("insecure").checked});
-    $("token").value="";setConn(j);loadJournals();}catch(e){$("connmsg").className="bad";$("connmsg").textContent="Ошибка: "+e.message;}};
+    $("token").value="";
+    const ct=$("gctoken").value.trim();
+    if(ct){$("connmsg").textContent="Jira подключена, проверяю Confluence...";
+      try{const c=await api("/api/conf/connect",{base:$("gconfbase").value,token:ct});setConf(c);}
+      catch(e){setConf({cerror:e.message});}
+      $("gctoken").value="";}
+    try{const st=JSON.parse(localStorage.getItem("jt_sa")||"{}");st.confbase=$("gconfbase").value;localStorage.setItem("jt_sa",JSON.stringify(st));$("confbase").value=$("gconfbase").value;}catch(e){}
+    setConn(j);loadJournals();}catch(e){$("connmsg").className="bad";$("connmsg").textContent="Ошибка: "+e.message;}};
 $("bdisc").onclick=async()=>{await api("/api/disconnect",{});setConn({connected:false});if(typeof setConf==="function")setConf({});};
 document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>showTab(b.dataset.t));
 $("file").onchange=e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{$("rows").value=r.result;};r.readAsText(f,"utf-8");};
@@ -2131,10 +2149,14 @@ document.querySelectorAll(".opts details.help").forEach(d=>d.addEventListener("t
 document.addEventListener("keydown",e=>{if(e.key==="Escape")document.querySelectorAll(".opts details.help[open]").forEach(d=>d.open=false);});
 /* ---- задачи из анализа ---- */
 let saPage=null,saTasks=[],saInfo=null;
-try{const st=JSON.parse(localStorage.getItem("jt_sa")||"{}");["saprj","satype","sacomp","confbase"].forEach(k=>{if(st[k])$(k).value=st[k];});}catch(e){}
+try{const st=JSON.parse(localStorage.getItem("jt_sa")||"{}");["saprj","satype","sacomp","confbase"].forEach(k=>{if(st[k])$(k).value=st[k];});if(st.confbase)$("gconfbase").value=st.confbase;}catch(e){}
 function saSave(){try{localStorage.setItem("jt_sa",JSON.stringify({saprj:$("saprj").value,satype:$("satype").value,sacomp:$("sacomp").value,confbase:$("confbase").value}));}catch(e){}}
 function setConf(s){const on=!!s.cconnected;
-  $("cmsg").className=on?"ok":"mut";$("cmsg").textContent=on?("Confluence подключён"+(s.cuser?": "+s.cuser:"")):"";
+  $("clconf").classList.toggle("on",on);$("clconf").classList.toggle("err",!!s.cerror);
+  $("cfstate").textContent=on?("Confluence"+(s.cuser?": "+s.cuser:"")):s.cerror?"Confluence: токен не принят":"Confluence: не подключено";
+  $("clconf").title=s.cerror||"";
+  $("cfbase").textContent=on?String(s.cbase||"").replace(/^https?:\/\//,""):"";
+  $("cmsg").className=on?"ok":s.cerror?"bad":"mut";$("cmsg").textContent=on?("Confluence подключён"+(s.cuser?": "+s.cuser:"")):s.cerror?("Confluence не подключён: "+s.cerror):"";
   $("ctoken").closest(".bar-q").classList.toggle("hide",on);}
 api("/api/state").then(setConf).catch(()=>{});
 $("ctoken").addEventListener("keydown",e=>{if(e.key==="Enter")$("cconn").click();});

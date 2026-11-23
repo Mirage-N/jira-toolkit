@@ -9,7 +9,7 @@
   * Дашборд: настраиваемые карточки-метрики (JQL) с порогами, готовые наборы под роли.
   * Связанные задачи: выгрузка всех связанных с задачей запросов (дата, статус, поля вроде «Наименование клиента», КУС по ссылке из описания) с выгрузкой в CSV.
   * Структура эпика: дерево задач эпика, подзадач и связей со статусом, датами начала/завершения и временем в работе; выгрузка в CSV;
-    кнопка «Создать структуру в Jira» (плагин Structure, REST API).
+    раскладка по папкам (проект / тип / исполнитель / статус) и кнопка «Создать структуру в Jira» (плагин Structure, REST API) с теми же папками.
 
 Безопасность:
   * приложение слушает ТОЛЬКО 127.0.0.1 (доступно только с этого компьютера);
@@ -289,7 +289,7 @@ def run_cards(cards, project):
 
 # ---------------------------------------------------------------- Структура эпика
 CAT_RU = {"new": "К выполнению", "indeterminate": "В работе", "done": "Готово"}
-TREE_FIELDS = ["summary", "status", "issuetype", "assignee", "created", "resolutiondate", "duedate", "issuelinks", "subtasks"]
+TREE_FIELDS = ["summary", "project", "status", "issuetype", "assignee", "created", "resolutiondate", "duedate", "issuelinks", "subtasks"]
 STATUS_CAT = {}
 STATUS_ID_CAT = {}
 HIST_WORK = set()
@@ -378,7 +378,9 @@ def make_node(it, rel):
     due = f.get("duedate")
     overdue = bool(due and cat != "done" and due < time.strftime("%Y-%m-%d"))
     d = lambda x: x.strftime("%Y-%m-%d") if x else ""
+    pr = f.get("project") or {}
     return {"key": it["key"].upper(), "id": str(it.get("id", "")), "summary": f.get("summary", ""), "type": (f.get("issuetype") or {}).get("name", ""),
+            "project": pr.get("key") or it["key"].upper().split("-")[0], "project_name": pr.get("name", ""),
             "status": st.get("name", ""), "cat": cat, "assignee": (f.get("assignee") or {}).get("displayName", ""),
             "created": d(created), "start": d(start), "start_approx": approx, "end": d(end), "days": days, "due": due or "",
             "overdue": overdue, "rel": rel}
@@ -418,7 +420,7 @@ def run_tree(job, root, depth, include_links, max_issues, exclude=frozenset()):
                 if ck in got:
                     raw[ck] = got[ck]; nodes[ck] = make_node(got[ck], rel); frontier.append(ck)
                 else:
-                    nodes[ck] = {"key": ck, "id": "", "summary": "(нет доступа или не найдена)", "type": "", "status": "нет доступа", "cat": "none", "assignee": "",
+                    nodes[ck] = {"key": ck, "id": "", "summary": "(нет доступа или не найдена)", "type": "", "project": ck.split("-")[0], "project_name": "", "status": "нет доступа", "cat": "none", "assignee": "",
                                  "created": "", "start": "", "start_approx": False, "end": "", "days": None, "due": "", "overdue": False, "rel": rel}
                 children.setdefault(pk, []).append(ck); children.setdefault(ck, [])
             job["done"] = len(nodes)
@@ -577,28 +579,156 @@ def forest_latest(sid):
     spec = urllib.parse.quote(json.dumps({"structureId": sid}, separators=(",", ":")))
     return struct_call("forest", "GET", "/forest/latest?s=" + spec)
 
-def parse_formula(formula):
+def parse_forest(formula):
+    """Строки леса Structure: [(rowId, глубина, элемент)]. Элемент - id задачи или «тип/id» (в типе бывает двоеточие)."""
     out = []
     for part in (formula or "").split(","):
-        p = part.strip().split(":")
-        if len(p) >= 3: out.append((p[2], int(p[1])))
+        p = part.strip().split(":", 2)
+        if len(p) == 3:
+            try: out.append((int(p[0]), int(p[1]), p[2]))
+            except ValueError: pass
     return out
 
-def create_structure(job_id, name, exclude):
+def parse_formula(formula):
+    return [(it, d) for _, d, it in parse_forest(formula)]
+
+FOLDER_TYPE = "com.almworks.jira.structure:type-folder"
+
+def is_folder_item(item):
+    return not str(item).isdigit() and "folder" in str(item).lower()
+
+def layout_from_tree(tree, exclude):
+    """Старый режим (без папок): дерево из сборки минус убранные пользователем задачи."""
+    nodes = tree["nodes"]; drop, out = [], []
+    for i, n in enumerate(nodes):
+        drop.append(n["pid"] >= 0 and (n["key"] in exclude or drop[n["pid"]]))
+    for i, n in enumerate(nodes):
+        if not drop[i]: out.append({"k": n["key"], "l": n["level"]})
+    return out
+
+def drop_subtrees(ent, bad):
+    """Убирает строки с индексами из bad вместе со всем, что под ними."""
+    out, cut = [], None
+    for i, e in enumerate(ent):
+        if cut is not None and e["l"] > cut: continue
+        cut = None
+        if i in bad: cut = e["l"]; continue
+        out.append(e)
+    return out
+
+def normalize_layout(layout, tree):
+    """Проверяет раскладку от страницы: только задачи из сборки, корректные уровни, без пустых папок."""
+    byk = {n["key"]: n for n in tree["nodes"]}
+    if not isinstance(layout, list) or not layout: raise JiraError(400, "Пустая раскладка структуры")
+    if len(layout) > 3000: raise JiraError(400, "Слишком много строк в раскладке")
+    ent, skipped, prev = [], [], -1
+    for x in layout:
+        if not isinstance(x, dict): raise JiraError(400, "Некорректная раскладка структуры")
+        try: lvl = int(x.get("l"))
+        except (TypeError, ValueError): raise JiraError(400, "Некорректный уровень в раскладке")
+        if lvl < 0 or lvl > 30 or lvl > prev + 1: raise JiraError(400, "Некорректная вложенность в раскладке")
+        prev = lvl
+        if "f" in x:
+            nm = " ".join(str(x.get("f") or "").split())[:200]
+            if not nm: raise JiraError(400, "Пустое название папки")
+            ent.append({"kind": "folder", "name": nm, "l": lvl})
+        else:
+            k = str(x.get("k") or "").strip().upper()
+            if k not in byk: raise JiraError(400, f"Задачи {k} нет в собранной структуре")
+            ent.append({"kind": "issue", "key": k, "id": str(byk[k].get("id", "")), "l": lvl})
+    if ent[0]["l"] != 0: raise JiraError(400, "Раскладка должна начинаться с верхнего уровня")
+    bad = {i for i, e in enumerate(ent) if e["kind"] == "issue" and not e["id"].isdigit()}
+    skipped = [ent[i]["key"] for i in sorted(bad)]
+    ent = drop_subtrees(ent, bad)
+    while True:   # папки, под которыми не осталось ни одной задачи
+        empty = set()
+        for i, e in enumerate(ent):
+            if e["kind"] != "folder": continue
+            j, has = i + 1, False
+            while j < len(ent) and ent[j]["l"] > e["l"]:
+                if ent[j]["kind"] == "issue": has = True; break
+                j += 1
+            if not has: empty.add(i)
+        if not empty: break
+        ent = drop_subtrees(ent, empty)
+    return ent, skipped
+
+def flatten_folders(ent):
+    """Запасной вариант, если папки создать нельзя: убираем папки, их содержимое поднимаем на уровень выше."""
+    out, stack = [], []
+    for e in ent:
+        while stack and stack[-1] >= e["l"]: stack.pop()
+        if e["kind"] == "folder": stack.append(e["l"]); continue
+        c = dict(e); c["l"] = e["l"] - len(stack); out.append(c)
+    return out
+
+def create_folder_row(sid, name, under, after, version):
+    """Создаёт папку в структуре (так же, как кнопка «+ Папка» в интерфейсе Structure)."""
+    base = {"item": {"type": FOLDER_TYPE, "values": {"summary": name}},
+            "forest": {"spec": {"structureId": sid}, "version": version},
+            "rowId": -1, "under": under, "after": after, "before": 0, "parameters": {}}
+    v1 = dict(base); v1["items"] = {"version": {"signature": 0, "version": 0}}
+    last = None
+    for body in (v1, base):
+        try: return struct_call("structure", "POST", "/item/create", body)
+        except JiraError as e:
+            last = e
+            if e.code not in (400, 404, 409, 415, 500): raise
+    raise last
+
+def build_forest(sid, ent, result):
+    """Добавляет строки по порядку (обход дерева сверху вниз): каждая новая строка оказывается в конце леса,
+    поэтому её rowId - строка с тем же номером в актуальном лесе. Подряд идущие задачи добавляются одним запросом."""
+    rows = {}; i = 0; folders_ok = None
+    def place(i):
+        L = ent[i]["l"]; parent, after = 0, 0
+        for j in range(i - 1, -1, -1):
+            if ent[j]["l"] < L: parent = rows[j]; break
+            if ent[j]["l"] == L and not after: after = rows[j]
+        return parent, after
+    def sync(upto):
+        cur = forest_latest(sid); got = parse_forest(cur.get("formula"))
+        if len(got) < upto: raise JiraError(500, f"после добавления в структуре {len(got)} строк вместо {upto}")
+        for j in range(upto):
+            if got[j][1] != ent[j]["l"]: raise JiraError(500, f"строка {j + 1}: уровень {got[j][1]} вместо {ent[j]['l']}")
+            rows[j] = got[j][0]
+        return cur
+    cur = forest_latest(sid)
+    while i < len(ent):
+        e = ent[i]; parent, after = place(i)
+        if e["kind"] == "folder":
+            try:
+                create_folder_row(sid, e["name"], parent, after, cur.get("version"))
+                cur = sync(i + 1)
+                if not is_folder_item(parse_forest(cur.get("formula"))[i][2]):
+                    raise JiraError(500, "вместо папки появился другой элемент")
+                folders_ok = True; i += 1; continue
+            except JiraError as err:
+                if folders_ok: raise          # первая папка создалась, следующая нет - это уже не «не поддерживается»
+                result["warnings"].append("Папки создать не удалось (" + str(err)[:200] + "). Задачи добавлены без папок, "
+                                          "но сгруппированы подряд. Пришлите этот текст - поправим под вашу версию Structure.")
+                # до первой папки строки уже в Jira и папок среди них нет; остальное «сплющиваем» и продолжаем
+                ent[i:] = flatten_folders(ent[i:])
+                folders_ok = False
+                cur = forest_latest(sid)
+                continue
+        L = e["l"]; j = i
+        while j < len(ent) and ent[j]["kind"] == "issue" and ent[j]["l"] >= L: j += 1
+        formula = ",".join(f"{-(100 + k)}:{ent[k]['l'] - L}:{ent[k]['id']}" for k in range(i, j))
+        act = {"action": "add", "under": parent, "after": after, "forest": formula}
+        struct_call("forest", "POST", "/forest/update", {"spec": {"structureId": sid}, "version": cur.get("version"), "actions": [act]})
+        cur = sync(j); i = j
+    return ent
+
+def create_structure(job_id, name, exclude, layout=None):
     job = JOBS.get(job_id)
     tree = job.get("tree") if job else None
     if not tree: raise JiraError(400, "Сначала соберите структуру (результат сборки не найден)")
     name = str(name or "").strip()[:200]
     if not name: raise JiraError(400, "Укажите название структуры")
-    nodes = tree["nodes"]; drop = []
-    for i, n in enumerate(nodes):
-        drop.append(n["pid"] >= 0 and (n["key"] in exclude or drop[n["pid"]]))
-    rows, skipped = [], []
-    for i, n in enumerate(nodes):
-        if drop[i]: continue
-        iid = str(n.get("id", ""))
-        if iid.isdigit(): rows.append((n["key"], iid, n["level"]))
-        else: skipped.append(n["key"])
+    ent, skipped = normalize_layout(layout if layout else layout_from_tree(tree, exclude), tree)
+    with_folders = any(e["kind"] == "folder" for e in ent)
+    rows = [(e["key"], e["id"], e["l"]) for e in ent if e["kind"] == "issue"]
     if not rows: raise JiraError(400, "Нет задач для добавления в структуру")
     # 1. разведка: плагин есть и у пользователя есть доступ (ничего не создаётся)
     try:
@@ -611,12 +741,33 @@ def create_structure(job_id, name, exclude):
     created = struct_call("structure", "POST", "/structure", {"name": name, "description": desc})
     sid = created.get("id")
     if sid is None: raise JiraError(500, "Jira не вернула номер созданной структуры: " + json.dumps(created, ensure_ascii=False)[:200])
-    result = {"id": sid, "url": STATE["base"].rstrip("/") + f"/secure/StructureBoard.jspa?s={sid}", "expected": len(rows),
-              "skipped": skipped, "warnings": [], "verified": False, "found": 0}
+    result = {"id": sid, "url": STATE["base"].rstrip("/") + f"/secure/StructureBoard.jspa?s={sid}", "expected": len(ent),
+              "skipped": skipped, "warnings": [], "verified": False, "found": 0, "folders": 0}
     try:
         with open(os.path.join(DATA, f"structure_{sid}.json"), "w", encoding="utf-8") as f:
-            json.dump({"id": sid, "name": name, "root": tree["root"], "created": time.strftime("%Y-%m-%d %H:%M:%S"), "issues": [r[0] for r in rows]}, f, ensure_ascii=False, indent=1)
+            json.dump({"id": sid, "name": name, "root": tree["root"], "created": time.strftime("%Y-%m-%d %H:%M:%S"), "issues": [r[0] for r in rows],
+                       "layout": [{"f": e["name"], "l": e["l"]} if e["kind"] == "folder" else {"k": e["key"], "l": e["l"]} for e in ent]}, f, ensure_ascii=False, indent=1)
     except OSError: pass
+    if with_folders:
+        # 3a. с папками: строки добавляются по порядку, папки создаются через REST Structure
+        try:
+            ent = build_forest(sid, ent, result)
+        except JiraError as e:
+            result["warnings"].append("структура заполнена не полностью: " + str(e)[:300])
+        try:
+            got = parse_forest(forest_latest(sid).get("formula"))
+            result["found"] = len(got); result["expected"] = len(ent)
+            result["folders"] = sum(1 for g in got if is_folder_item(g[2]))
+            exp = [("folder" if e["kind"] == "folder" else e["id"], e["l"]) for e in ent]
+            act = [("folder" if is_folder_item(g[2]) else g[2], g[1]) for g in got]
+            result["verified"] = exp == act
+            if got and not result["verified"] and not result["warnings"]:
+                result["warnings"].append(f"состав структуры отличается от ожидаемого: ожидалось {len(ent)} строк, найдено {len(got)}")
+        except JiraError as e:
+            result["warnings"].append("не удалось проверить результат: " + str(e)[:160])
+        if not result["found"]:
+            result["warnings"].append("строки не добавлены. Удалите пустую структуру в «Управление структурами» и пришлите текст ошибки")
+        return result
     # 3. добавляем строки одним запросом
     formula = ",".join(f"{-(100 + i)}:{lvl}:{iid}" for i, (_, iid, lvl) in enumerate(rows))
     variants = [{"action": "add", "under": 0, "forest": formula},
@@ -1014,7 +1165,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/tree/create":
                 import re as _re
                 ex = frozenset(str(x).strip().upper() for x in (body.get("exclude") or []) if _re.match(r"^[A-Za-z][A-Za-z0-9_]*-\d+$", str(x).strip()))
-                return self._json(create_structure(str(body.get("job", "")), body.get("name", ""), ex))
+                return self._json(create_structure(str(body.get("job", "")), body.get("name", ""), ex, body.get("layout")))
             if path == "/api/tree/start":
                 import re as _re
                 key = str(body.get("key", "")).strip().upper()
@@ -1048,7 +1199,7 @@ class Handler(BaseHTTPRequestHandler):
         except JiraError as e: self._json({"error": str(e)}, 502)
         except Exception as e: self._json({"error": "внутренняя ошибка: " + str(e)}, 500)
 
-PAGE = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Jira Toolkit v0.24</title>
+PAGE = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Jira Toolkit v0.25</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
 :root{
@@ -1131,6 +1282,11 @@ section>.head{display:flex;align-items:flex-end;justify-content:space-between;ga
 .opts{display:flex;flex-wrap:wrap;gap:8px 20px;align-items:center;margin-top:12px;padding-top:12px;border-top:1px dashed var(--rule)}
 .help{margin-top:12px;font-size:13px;color:var(--graphite-2);max-width:90ch}
 .help p{margin:0 0 6px}
+/* подсказки в строке параметров: всплывают поверх, а не раздвигают строку */
+.opts details.help{position:relative}
+.opts details.help[open]>summary{margin-bottom:0}
+.opts details.help>:not(summary){position:absolute;top:calc(100% + 6px);left:0;z-index:30;width:min(440px,80vw);margin:0;padding:10px 12px;
+ background:var(--sheet);border:1px solid var(--rule-3);border-radius:6px;box-shadow:0 6px 20px rgba(0,0,0,.12);color:var(--graphite-2);line-height:1.45}
 .row{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;margin:8px 0}
 .mut{color:var(--pencil)}.ok{color:var(--stamp)}.bad{color:var(--redpen)}
 .warn{color:#8A5A00;background:var(--marker-tint);padding:0 4px;border-radius:3px;font-weight:600;font-size:var(--t12)}
@@ -1214,7 +1370,7 @@ pre{font-family:var(--mono)}
 </style></head><body>
 <div class="app">
 <aside>
- <div class="brand"><b>Jira Toolkit</b><span>v0.24</span></div>
+ <div class="brand"><b>Jira Toolkit</b><span>v0.25</span></div>
  <nav>
   <div class="navh">Смотреть</div>
   <button data-t="lk">Связанные задачи</button>
@@ -1336,6 +1492,8 @@ pre{font-family:var(--mono)}
    <button class="p" id="tgo">Собрать</button><button id="tcancel" class="hide">Остановить</button><button id="tcsv" class="hide">Скачать CSV</button>
   </div>
   <div class="opts"><label><input type="checkbox" id="tlinks" checked>Включать связи между задачами (blocks, relates и др.)</label>
+   <label class="f"><span>Папки</span><select id="tgroup"><option value="">без папок</option><option value="project" selected>по проекту</option><option value="type">по типу задачи</option><option value="assignee">по исполнителю</option><option value="status">по статусу</option></select></label>
+   <details class="help" style="margin:0"><summary>Как раскладываются папки</summary><p>Эпик остаётся наверху, под ним — папка на каждый проект (тип, исполнителя, статус). Внутри папки сохраняется вложенность: задача стоит под ближайшим «предком» из той же папки, иначе — прямо в папке. Эти же папки создаются в структуре Jira и попадают в столбец «Папка» в CSV.</p></details>
    <details class="help" style="margin:0"><summary>Как считаются даты</summary><p>Каждая задача показана один раз — под той, через которую найдена. «Начало» — первый переход в статус категории «В работе» (≈ — оценка по дате создания, если истории нет). «В работе» — календарные дни от начала до завершения или до сегодня.</p></details></div>
   <div class="opts hide" id="tmkrow"><label class="f grow"><span>Структура в Jira (плагин Structure)</span><input id="tsname" placeholder="Название структуры"></label>
    <button class="sign" id="tmk" style="align-self:flex-end">Создать структуру в Jira</button></div>
@@ -1528,6 +1686,12 @@ $("drun").onclick=async()=>{
         <div class="n">${r.error?"—":r.total}</div><div class="th">${th}</div></a>`;}).join("");
     $("dmsg").textContent="Обновлено "+new Date().toLocaleTimeString();
   }catch(e){$("dmsg").textContent="Ошибка: "+e.message;}};
+/* всплывающие подсказки: одна открыта, закрываются кликом мимо и Esc */
+document.addEventListener("click",e=>{document.querySelectorAll(".opts details.help[open]").forEach(d=>{if(!d.contains(e.target))d.open=false;});});
+document.querySelectorAll(".opts details.help").forEach(d=>d.addEventListener("toggle",()=>{
+  const pop=d.querySelector(":scope>:not(summary)");if(!pop||!d.open)return;pop.style.left="0";pop.style.right="auto";
+  const r=pop.getBoundingClientRect();if(r.right>window.innerWidth-8){pop.style.left="auto";pop.style.right="0";}}));
+document.addEventListener("keydown",e=>{if(e.key==="Escape")document.querySelectorAll(".opts details.help[open]").forEach(d=>d.open=false);});
 /* ---- структура эпика ---- */
 let treeData=null,collapsed=new Set(),treeJob=null,excl=new Set(),exclRoot="";
 const fmtD=s=>s?s.split("-").reverse().join("."):"—";
@@ -1548,16 +1712,17 @@ $("tgo").onclick=async()=>{
 let createdSig="";
 $("tfrmcp").onclick=async()=>{const t=$("tfrmtxt");try{await navigator.clipboard.writeText(t.value);$("tfrmmsg").textContent="Скопировано";}catch(e){t.select();$("tfrmmsg").textContent="Выделено, нажмите Ctrl+C";}setTimeout(()=>$("tfrmmsg").textContent="",2500);};
 $("tmk").onclick=async()=>{
-  const v=getView().filter(n=>n.cat!=="none"),name=$("tsname").value.trim();
+  const gv=groupedView(getView(),$("tgroup").value),v=gv.filter(n=>!n.folder&&n.cat!=="none"),nf=gv.filter(n=>n.folder).length,name=$("tsname").value.trim();
+  const layout=gv.map(n=>n.folder?{f:n.name,l:n.level}:{k:n.key,l:n.level});
   if(!name){$("tmsg").className="bad";$("tmsg").textContent="Укажите название структуры.";return;}
-  const sig=treeJob+"|"+[...excl].sort().join(",");
+  const sig=treeJob+"|"+[...excl].sort().join(",")+"|"+$("tgroup").value;
   if(createdSig===sig&&!confirm("Структура для этого набора задач уже создавалась. Создать ещё одну?"))return;
-  if(!confirm(`Создать в Jira структуру «${name}»?\nЗадач: ${v.length}`+(excl.size?` (убрано вами: ${excl.size})`:"")+`\nПрава доступа программа не меняет.`))return;
+  if(!confirm(`Создать в Jira структуру «${name}»?\nЗадач: ${v.length}`+(nf?`, папок: ${nf} (${$("tgroup").selectedOptions[0].text})`:"")+(excl.size?` (убрано вами: ${excl.size})`:"")+`\nПрава доступа программа не меняет.`))return;
   $("tmk").disabled=true;$("tmsg").className="mut";$("tmsg").textContent="Создаю структуру в Jira...";
-  try{const r=await api("/api/tree/create",{job:treeJob,name:name,exclude:[...excl]});
+  try{const r=await api("/api/tree/create",{job:treeJob,name:name,exclude:[...excl],layout:layout});
     createdSig=sig;
     const ok=r.verified;$("tmsg").className=ok?"ok":"bad";
-    $("tmsg").innerHTML=(ok?`Структура создана и проверена: ${r.found} из ${r.expected} строк. `:`Структура создана (№ ${esc(r.id)}), но есть замечания. `)+
+    $("tmsg").innerHTML=(ok?`Структура создана и проверена: ${r.found} из ${r.expected} строк${r.folders?`, из них папок: ${r.folders}`:""}. `:`Структура создана (№ ${esc(r.id)}), но есть замечания. `)+
       `<a href="${esc(r.url)}" target="_blank" rel="noopener">Открыть в Jira</a>`+
       (r.skipped.length?`<div class="mut">Не добавлены (нет id/доступа): ${esc(r.skipped.join(", "))}</div>`:"")+
       (r.warnings||[]).map(w=>`<div class="bad">${esc(w)}</div>`).join("");
@@ -1574,6 +1739,35 @@ function getView(){
   o.forEach((n,i)=>{if(drop[i])return;map[i]=v.length;const c=Object.assign({},n);c.pid=n.pid<0?-1:map[n.pid];c.has_children=false;v.push(c);});
   v.forEach(n=>{if(n.pid>=0)v[n.pid].has_children=true;});
   return v;}
+try{const g=localStorage.getItem("jt_tree_group");if(g!=null)$("tgroup").value=g;}catch(e){}
+$("tgroup").onchange=()=>{try{localStorage.setItem("jt_tree_group",$("tgroup").value);}catch(e){}if(treeData){collapsed=new Set();renderTree();}};
+function groupOf(n,mode){
+  if(mode==="project"){const k=n.project||n.key.split("-")[0];return{k:k,name:k+(n.project_name?" · "+n.project_name:"")};}
+  if(mode==="type")return{k:n.type||"",name:n.type||"Без типа"};
+  if(mode==="assignee")return{k:n.assignee||"",name:n.assignee||"Без исполнителя"};
+  if(mode==="status")return{k:n.status||"",name:n.status||"Без статуса"};
+  return null;}
+/* Раскладка по папкам: корень наверху, под ним папки; внутри папки задача висит под ближайшим предком из той же папки. */
+function groupedView(v,mode){
+  if(!mode||v.length<2)return v.map(n=>Object.assign({folder:false,group:""},n));
+  const root=v[0],gk=v.map(n=>groupOf(n,mode)),groups=new Map(),kids=new Map();
+  for(let i=1;i<v.length;i++){
+    const g=gk[i].k;let p=v[i].pid;
+    while(p>0&&gk[p].k!==g)p=v[p].pid;
+    const par=p>0?p:-1,kk=g+"|"+par;
+    if(!groups.has(g))groups.set(g,{name:gk[i].name,cnt:0});
+    else if(gk[i].name.length>groups.get(g).name.length)groups.get(g).name=gk[i].name;
+    groups.get(g).cnt++;if(!kids.has(kk))kids.set(kk,[]);kids.get(kk).push(i);}
+  const rk=gk[0].k,order=[...groups.keys()].sort((a,b)=>(b===rk)-(a===rk)||groups.get(a).name.localeCompare(groups.get(b).name,"ru"));
+  const out=[Object.assign({},root,{folder:false,group:"",level:0,pid:-1,has_children:groups.size>0})];
+  for(const g of order){
+    const G=groups.get(g),fi=out.length;
+    out.push({folder:true,key:"folder:"+g,name:G.name,cnt:G.cnt,level:1,pid:0,has_children:true,cat:"folder",group:G.name});
+    const walk=(par,lvl,pidx)=>{for(const i of (kids.get(g+"|"+par)||[])){
+      const idx=out.length;out.push(Object.assign({},v[i],{folder:false,group:G.name,level:lvl,pid:pidx,has_children:false}));
+      out[pidx].has_children=true;walk(i,lvl+1,idx);}};
+    walk(-1,2,fi);}
+  return out;}
 function calcSummary(v){
   const real=v.filter(n=>n.cat!=="none");
   const s={total:v.length,new:0,indeterminate:0,done:0,no_access:v.length-real.length,overdue:0};
@@ -1596,30 +1790,31 @@ function renderTree(){
      <button id="rsall">Вернуть все</button></div>`:""}
    ${t.truncated?`<div class="bad">Достигнут лимит задач: структура неполная. Увеличьте «максимум задач» или уменьшите глубину.</div>`:""}`;
   $("tsum").classList.remove("hide");
+  const gv=groupedView(v,$("tgroup").value);
   $("tres").innerHTML=`<table><thead><tr><th>Задача</th><th>Связь</th><th>Статус</th><th>Исполнитель</th><th>Начало</th><th>Завершение</th><th>В работе, дн.</th><th>Срок</th><th></th></tr></thead><tbody id="tbody">`+
-   v.map((n,i)=>`<tr data-i="${i}"><td style="padding-left:${8+n.level*20}px;white-space:nowrap">${n.has_children?`<button class="tg" data-tg="${esc(n.key)}">${collapsed.has(n.key)?"▸":"▾"}</button>`:`<span style="display:inline-block;width:22px"></span>`}
+   gv.map((n,i)=>n.folder?`<tr data-i="${i}"><td colspan="9" style="padding-left:${8+n.level*20}px;white-space:nowrap;background:var(--sunk)"><button class="tg" data-tg="${esc(n.key)}">${collapsed.has(n.key)?"▸":"▾"}</button> 📁 <b>${esc(n.name)}</b> <span class="mut">· задач: ${n.cnt}</span></td></tr>`:`<tr data-i="${i}"><td style="padding-left:${8+n.level*20}px;white-space:nowrap">${n.has_children?`<button class="tg" data-tg="${esc(n.key)}">${collapsed.has(n.key)?"▸":"▾"}</button>`:`<span style="display:inline-block;width:22px"></span>`}
      <a href="${esc(t.base)}/browse/${esc(n.key)}" target="_blank" rel="noopener">${esc(n.key)}</a> <span class="mut">${esc(n.type)}</span><div style="margin-left:22px;white-space:normal">${esc(n.summary)}</div></td>
      <td class="mut">${esc(n.rel)}</td><td><span class="chip c-${n.cat}">${esc(n.status)}</span></td><td>${esc(n.assignee)}</td>
      <td>${n.start?(n.start_approx?"≈ ":"")+fmtD(n.start):"—"}</td><td>${fmtD(n.end)}</td><td>${n.days==null?"—":n.days}</td><td class="${n.overdue?"od":""}">${fmtD(n.due)}</td>
      <td>${n.pid>=0?`<button class="tg" data-rm="${esc(n.key)}" title="Убрать задачу${n.has_children?" и всё, что найдено через неё":""}" style="font-size:16px">✕</button>`:""}</td></tr>`).join("")+`</tbody></table>`;
   $("tres").classList.remove("hide");$("tcsv").classList.remove("hide");$("tmkrow").classList.remove("hide");
-  document.querySelectorAll("[data-tg]").forEach(b=>b.onclick=()=>{const k=b.dataset.tg;if(collapsed.has(k))collapsed.delete(k);else collapsed.add(k);b.textContent=collapsed.has(k)?"▸":"▾";applyCollapse(v);});
+  document.querySelectorAll("[data-tg]").forEach(b=>b.onclick=()=>{const k=b.dataset.tg;if(collapsed.has(k))collapsed.delete(k);else collapsed.add(k);b.textContent=collapsed.has(k)?"▸":"▾";applyCollapse(gv);});
   document.querySelectorAll("[data-rm]").forEach(b=>b.onclick=()=>{excl.add(b.dataset.rm);renderTree();});
   document.querySelectorAll("[data-rs]").forEach(a=>a.onclick=e=>{e.preventDefault();const k=a.dataset.rs;excl.delete(k);
     if(!treeData.nodes.some(n=>n.key===k)){$("tmsg").className="mut";$("tmsg").textContent="Задача "+k+" вернётся после повторной сборки структуры.";}
     renderTree();});
   if($("rsall"))$("rsall").onclick=()=>{const need=[...excl].some(k=>!treeData.nodes.some(n=>n.key===k));excl=new Set();
     if(need){$("tmsg").className="mut";$("tmsg").textContent="Часть задач вернётся после повторной сборки структуры.";}renderTree();};
-  applyCollapse(v);}
+  applyCollapse(gv);}
 function applyCollapse(v){
   const hidden=[];
   document.querySelectorAll("#tbody tr").forEach(tr=>{const i=+tr.dataset.i,p=v[i].pid;
     hidden[i]=p>=0&&(hidden[p]||collapsed.has(v[p].key));tr.style.display=hidden[i]?"none":"";});}
 $("tcsv").onclick=()=>{
-  const v=getView();
+  const v=groupedView(getView(),$("tgroup").value).filter(n=>!n.folder);
   const q=x=>'"'+String(x==null?"":x).replace(/"/g,'""')+'"';
-  const head=["Уровень","Ключ","Заголовок","Тип","Связь","Статус","Категория","Исполнитель","Создана","Начало","Завершение","В работе (дн)","Срок","Ссылка"];
-  const rows=v.map(n=>[n.level,n.key,n.summary,n.type,n.rel,n.status,{new:"К выполнению",indeterminate:"В работе",done:"Готово",none:"нет доступа"}[n.cat],n.assignee,n.created,(n.start_approx?"≈ ":"")+n.start,n.end,n.days==null?"":n.days,n.due,treeData.base+"/browse/"+n.key]);
+  const head=["Папка","Уровень","Ключ","Заголовок","Тип","Связь","Статус","Категория","Исполнитель","Создана","Начало","Завершение","В работе (дн)","Срок","Ссылка"];
+  const rows=v.map(n=>[n.group,n.level,n.key,n.summary,n.type,n.rel,n.status,{new:"К выполнению",indeterminate:"В работе",done:"Готово",none:"нет доступа"}[n.cat],n.assignee,n.created,(n.start_approx?"≈ ":"")+n.start,n.end,n.days==null?"":n.days,n.due,treeData.base+"/browse/"+n.key]);
   const csv="﻿"+[head].concat(rows).map(r=>r.map(q).join(";")).join("\r\n");
   const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv;charset=utf-8"}));a.download="structure_"+treeData.root+".csv";a.click();};
 

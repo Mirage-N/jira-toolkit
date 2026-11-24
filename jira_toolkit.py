@@ -668,7 +668,7 @@ def create_folder_row(sid, name, under, after, version):
     """Создаёт папку в структуре (так же, как кнопка «+ Папка» в интерфейсе Structure)."""
     base = {"item": {"type": FOLDER_TYPE, "values": {"summary": name}},
             "forest": {"spec": {"structureId": sid}, "version": version},
-            "rowId": -1, "under": under, "after": after, "before": 0, "parameters": {}}
+            "rowId": -100, "under": under, "after": after, "before": 0, "parameters": {}}   # rowId -1 у Structure зарезервирован под super-root
     v1 = dict(base); v1["items"] = {"version": {"signature": 0, "version": 0}}
     last = None
     for body in (v1, base):
@@ -1591,7 +1591,7 @@ class Handler(BaseHTTPRequestHandler):
         except JiraError as e: self._json({"error": str(e)}, 502)
         except Exception as e: self._json({"error": "внутренняя ошибка: " + str(e)}, 500)
 
-PAGE = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Jira Toolkit v0.26</title>
+PAGE = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Jira Toolkit v0.26.1</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
 :root{
@@ -1766,7 +1766,7 @@ pre{font-family:var(--mono)}
 </style></head><body>
 <div class="app">
 <aside>
- <div class="brand"><b>Jira Toolkit</b><span>v0.26</span></div>
+ <div class="brand"><b>Jira Toolkit</b><span>v0.26.1</span></div>
  <nav>
   <div class="navh">Смотреть</div>
   <button data-t="lk">Связанные задачи</button>

@@ -597,7 +597,8 @@ def parse_formula(formula):
 FOLDER_TYPE = "com.almworks.jira.structure:type-folder"
 
 def is_folder_item(item):
-    return not str(item).isdigit() and "folder" in str(item).lower()
+    """Задачи в формуле леса - просто id; всё остальное (папка в любом представлении: «...type-folder/5», «10200/5») - не задача."""
+    return not str(item).isdigit()
 
 def layout_from_tree(tree, exclude):
     """Старый режим (без папок): дерево из сборки минус убранные пользователем задачи."""
@@ -700,10 +701,19 @@ def build_forest(sid, ent, result):
         e = ent[i]; parent, after = place(i)
         if e["kind"] == "folder":
             try:
+                before = {g[0] for g in parse_forest(cur.get("formula"))}
                 create_folder_row(sid, e["name"], parent, after, cur.get("version"))
+                got = parse_forest(forest_latest(sid).get("formula"))
+                new = [(k, g) for k, g in enumerate(got) if g[0] not in before]
+                if len(new) != 1:
+                    raise JiraError(500, f"после создания папки новых строк: {len(new)} "
+                                         f"({', '.join(g[2] for _, g in new[:3]) or 'нет'})")
+                k, g = new[0]
+                if k != i or g[1] != e["l"]:
+                    raise JiraError(500, f"папка «{g[2]}» встала на строку {k + 1} уровень {g[1]}, ожидалось строка {i + 1} уровень {e['l']}")
+                if not is_folder_item(g[2]):
+                    raise JiraError(500, f"вместо папки появился элемент «{g[2]}»")
                 cur = sync(i + 1)
-                if not is_folder_item(parse_forest(cur.get("formula"))[i][2]):
-                    raise JiraError(500, "вместо папки появился другой элемент")
                 folders_ok = True; i += 1; continue
             except JiraError as err:
                 if folders_ok: raise          # первая папка создалась, следующая нет - это уже не «не поддерживается»
